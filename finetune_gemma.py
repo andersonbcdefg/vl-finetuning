@@ -55,7 +55,7 @@ image = (
     )
     .pip_install("bitsandbytes")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@d3a0ae0",
+        "github.com/andersonbcdefg/vl-finetuning.git@4d56f58",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")
@@ -79,6 +79,7 @@ def _strip_answer(conv: list[dict]) -> list[dict]:
 @torch.no_grad()
 def evaluate(model, processor, dataset, device, max_tokens: int = 20, format: Literal["plain", "json", "xml"] = "xml"):
     from qwen_vl_utils import process_vision_info
+    from transformers.models import GenerationConfig
 
     model.eval()
 
@@ -107,8 +108,11 @@ def evaluate(model, processor, dataset, device, max_tokens: int = 20, format: Li
 
         out_ids = model.generate(
             **inputs,
-            max_new_tokens=max_tokens,
-            do_sample=False,  # turn off sampling
+            generation_config=GenerationConfig(
+                do_sample=False,
+                max_new_tokens=max_tokens,
+                temperature=0.0
+            )
         )
         pred_txt = processor.tokenizer.decode(
             out_ids[0][inputs["input_ids"].shape[1] :],
@@ -116,7 +120,7 @@ def evaluate(model, processor, dataset, device, max_tokens: int = 20, format: Li
             clean_up_tokenization_spaces=False,
         )
         point = parse_point(pred_txt, format=format)
-        print("point:", point)
+        # print("point:", point)
         if point is None:
             print("pred text:", pred_txt)
         if point:

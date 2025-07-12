@@ -54,12 +54,15 @@ def convert_to_messages(batch: dict, bbox_type="relative", format: Literal["plai
             h_scale = new_h / height
             cx, cy = (x1 + x2) / 2 * w_scale, (y1 + y2) / 2 * h_scale
 
+        cx, cy = int(cx), int(cy)
+        new_w, new_h = int(new_w), int(new_h)
+
         label = format_point((cx, cy), format=format)
         format_prompt = "Return your click as (x, y) pixel coordinates."
         if format == "json":
             format_prompt = "Report the click location as an (x, y) point in JSON format."
         elif format == "xml":
-            format_prompt = "Report the click location in XML like <points x y>object</points>."
+            format_prompt = 'Report the click location in XML like <points x1="x" y1="y">object</points>.'
 
         out.append(
             [
