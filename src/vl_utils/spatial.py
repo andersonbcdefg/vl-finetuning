@@ -21,7 +21,7 @@ def format_point(point: tuple, format: Literal["plain", "xml", "json"]):
     if format == "plain":
         return f"({x},{y})"
     elif format == "xml":
-        return f"<points {x} {y}>click</points>"
+        return f'<points x1="{x}" y1="{y}">click</points>'
     elif format == "json":
         res = "```json\n[\n"
         res += f'\t{{"point_2d": [{x}, {y}], "label": "click"}}'
@@ -43,8 +43,13 @@ def parse_point(
                 return float(m.group(1)), float(m.group(2))
 
         elif format == "xml":
-            # Extract from format: "<points x y>click</points>"
-            m = re.search(r"<points\s+([0-9]*\.?[0-9]+)\s+([0-9]*\.?[0-9]+)>.*</points>", text)
+            # Try new format first: <points x1="x" y1="y" ...>
+            m = re.search(r'<points[^>]*x1="([0-9]*\.?[0-9]+)"[^>]*y1="([0-9]*\.?[0-9]+)"', text)
+            if m:
+                return float(m.group(1)), float(m.group(2))
+
+            # Fall back to old format: <points x y>content</points>
+            m = re.search(r"<points\s+([0-9]*\.?[0-9]+)\s+([0-9]*\.?[0-9]+)>", text)
             if m:
                 return float(m.group(1)), float(m.group(2))
 

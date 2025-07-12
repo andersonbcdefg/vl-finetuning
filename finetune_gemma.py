@@ -55,7 +55,7 @@ image = (
     )
     .pip_install("bitsandbytes")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@a13549a",
+        "github.com/andersonbcdefg/vl-finetuning.git@d3a0ae0",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")
@@ -109,15 +109,16 @@ def evaluate(model, processor, dataset, device, max_tokens: int = 20, format: Li
             **inputs,
             max_new_tokens=max_tokens,
             do_sample=False,  # turn off sampling
-            temperature=0.0,  # no randomness even sampling
         )
         pred_txt = processor.tokenizer.decode(
             out_ids[0][inputs["input_ids"].shape[1] :],
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )
-
         point = parse_point(pred_txt, format=format)
+        print("point:", point)
+        if point is None:
+            print("pred text:", pred_txt)
         if point:
             if point_in_bbox(point, gt_box):
                 hits += 1
@@ -184,7 +185,7 @@ def train():
             batched=True,
             batch_size=32,
             num_proc=8,  # type: ignore
-            load_from_cache_file=False,  # type: ignore
+            # load_from_cache_file=False,  # type: ignore
         )
         .select_columns(["messages", "bbox"])
     )
@@ -195,7 +196,7 @@ def train():
             batched=True,
             batch_size=32,
             num_proc=8,  # type: ignore
-            load_from_cache_file=False,  # type: ignore
+            # load_from_cache_file=False,  # type: ignore
         )
         .select_columns(["messages", "bbox"])
     )
