@@ -19,7 +19,7 @@ from vl_utils.spatial import parse_point, point_in_bbox, dist_to_center
 # ------------------------------------------------------------------------- #
 python_version = "3.11"
 flash_attn_version = "2.6.3"
-pytorch_version = "2.7.0"
+pytorch_version = "2.7.1"
 cuda_version = "12.8.0"  # should be no greater than host CUDA version
 flavor = "devel"  #  includes full CUDA toolkit
 operating_sys = "ubuntu22.04"
@@ -54,6 +54,13 @@ image = (
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
     )
     .pip_install("bitsandbytes")
+    .pip_install_private_repos(
+        "github.com/andersonbcdefg/vl-finetuning.git",
+        git_user="andersonbcdefg",
+        secrets=[
+            modal.Secret.from_name("my-github-secret")
+        ]
+    )
     .entrypoint([])
 )
 
@@ -173,7 +180,7 @@ def train():
     ds1 = (
         load_dataset(dataset_id, split="test")
         .map(
-            convert_to_messages,
+            partial(convert_to_messages, format="xml"),
             batched=True,
             batch_size=32,
             num_proc=8,  # type: ignore
@@ -184,7 +191,7 @@ def train():
     ds2 = (
         load_dataset(groundui_id, split="train")
         .map(
-            partial(convert_to_messages, bbox_type="absolute"),
+            partial(convert_to_messages, bbox_type="absolute", format="xml"),
             batched=True,
             batch_size=32,
             num_proc=8,  # type: ignore

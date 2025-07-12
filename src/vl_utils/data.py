@@ -3,8 +3,10 @@ import io
 
 from PIL import Image, ImageFile
 from qwen_vl_utils import smart_resize
+from typing import Literal
 
-from vl_utils.common import MAX_PIXELS
+from .common import MAX_PIXELS
+from .spatial import format_point
 
 
 def _to_data_uri(img: Image.Image, fmt="JPEG"):
@@ -33,7 +35,7 @@ def _to_data_uri(img: Image.Image, fmt="JPEG"):
         return None
 
 
-def convert_to_messages(batch: dict, bbox_type="relative"):
+def convert_to_messages(batch: dict, bbox_type="relative", format: Literal["plain", "xml", "json"] = "plain"):
     out, bboxes = [], []
 
     for img, inst, (x1, y1, x2, y2) in zip(
@@ -52,7 +54,12 @@ def convert_to_messages(batch: dict, bbox_type="relative"):
             h_scale = new_h / height
             cx, cy = (x1 + x2) / 2 * w_scale, (y1 + y2) / 2 * h_scale
 
-        label = f"({round(cx)}, {round(cy)})"
+        label = format_point(cx, cy)
+        format_prompt = "Return your click as (x, y) pixel coordinates."
+        if format == "json":
+            format_prompt = "Report the click location as an (x, y) point in JSON format."
+        elif format == "xml":
+            format_prompt = "Report the click location in XML like <points x y>object</points>."
 
         out.append(
             [
@@ -63,9 +70,9 @@ def convert_to_messages(batch: dict, bbox_type="relative"):
                             "type": "text",
                             "text": (
                                 "Determine where to click in the UI to complete the task. "
-                                "Return your click as (x, y) pixel coordinates. "
-                                f"The image is size [{new_w}, {new_h}], "
-                                f" (0, 0) is the top-left and ({new_w}, {new_h}) is the bottom-right."
+                                + format_prompt
+                                + f" The image is size [{new_w}, {new_h}], "
+                                + f" (0, 0) is the top-left and ({new_w}, {new_h}) is the bottom-right."
                             ),
                         }
                     ],
