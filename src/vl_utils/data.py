@@ -22,7 +22,7 @@ class DatasetConfig:
     bbox_type: Literal["absolute", "relative"]
 
 DATASETS = {
-    "webclick": DatasetConfig("Hcompany/WebClick", "test", "absolute"),
+    "webclick": DatasetConfig("Hcompany/WebClick", "test", "relative"),
     "groundui-1k": DatasetConfig("agent-studio/GroundUI-1K", "train", "absolute"),
 }
 
@@ -61,8 +61,6 @@ def load_data(
     test = ds.select(test_ids)  # type: ignore
 
     return train, test
-
-
 
 def _to_data_uri(img: Image.Image, fmt="JPEG"):
     """
@@ -195,22 +193,23 @@ def collate(batch: list[dict[str, Any]], processor: Any, eval: bool = False):
     if eval:
         conversations = [_strip_answer(conv) for conv in conversations]
 
-        texts = [
-            processor.apply_chat_template(c, add_generation_prompt=eval, tokenize=False)
-            for c in conversations
-        ]
+    texts = [
+        processor.apply_chat_template(c, add_generation_prompt=eval, tokenize=False)
+        for c in conversations
+    ]
 
-        image_inputs, _ = process_vision_info(conversations)  # type: ignore
+    image_inputs, _ = process_vision_info(conversations)  # type: ignore
 
-        inputs = processor(
-            text=texts,
-            images=image_inputs,
-            videos=None,
-            padding=True,
-            return_tensors="pt",
-        )
+    inputs = processor(
+        text=texts,
+        images=image_inputs,
+        videos=None,
+        padding=True,
+        return_tensors="pt",
+    )
 
-        inputs = add_labels_to_inputs(inputs)
-        if eval:
-            inputs["bbox"] = [item['bbox'] for item in batch] # type: ignore
-        return inputs
+    inputs = add_labels_to_inputs(inputs)
+    if eval:
+        inputs["bbox"] = [item['bbox'] for item in batch] # type: ignore
+
+    return inputs
