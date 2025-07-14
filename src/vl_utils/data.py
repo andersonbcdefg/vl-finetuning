@@ -1,12 +1,67 @@
 import base64
 import io
+from os import setreuid
+import random
+import torch
 
 from PIL import Image, ImageFile
 from qwen_vl_utils import smart_resize
-from typing import Literal
+from typing import Literal, Any
+from datasets import load_dataset, concatenate_datasets, Dataset
+from functools import partial
 
 from .common import MAX_PIXELS
 from .spatial import format_point
+
+from dataclasses import dataclass
+
+@dataclass
+class DatasetConfig:
+    repo_id: str
+    split: str
+    bbox_type: Literal["absolute", "relative"]
+
+DATASETS = {
+    "webclick": DatasetConfig("webclick", "test", "absolute"),
+    "groundui-1k": DatasetConfig("groundui-1k", "train", "absolute"),
+}
+
+def _load_one(dataset_name: str):
+    cfg = DATASETS[dataset_name]
+    ds = load_dataset(cfg.repo_id, split=cfg.split).map(
+        partial(convert_to_messages, bbox_type=cfg.bbox_type, format="xml"),
+        batched=True,
+        batch_size=32,
+        num_proc=8,  # type: ignore
+        load_from_cache_file=False,  # type: ignore
+    ).select_columns(["messages", "bbox"])
+
+    return ds
+
+def load_data(
+    dataset: Literal["webclick", "groundui-1k", "both"] = "webclick",
+    test_size: int = 100,
+    seed: int = 42
+):
+    if dataset == "both":
+        dataset_names = ["webclick", "groundui-1k"]
+    else:
+        dataset_names = [dataset]
+
+    loaded = [_load_one(ds_name) for ds_name in dataset_names]
+
+    if len(loaded) == 1:
+        ds = loaded[0]
+    else:
+        ds = concatenate_datasets(loaded) # type: ignore
+
+    random.seed(seed)
+    test_ids = random.sample(range(len(ds)), test_size)
+    train = ds.select([x for x in range(len(ds)) if x not in test_ids])  # type: ignore
+    test = ds.select(test_ids)  # type: ignore
+
+    return train, test
+
 
 
 def _to_data_uri(img: Image.Image, fmt="JPEG"):
@@ -106,3 +161,56 @@ def strip_null_images(convs):
             if "video" in part and part.get("video") is None:
                 part.pop("video")
     return convs
+
+def add_labels_to_inputs(
+    inputs: dict[str, torch.Tensor], IM_START = 151644, ASSISTANT=77091
+) -> dict[str, torch.Tensor]:
+    labels = inputs["input_ids"].clone()
+
+    for i, ids in enumerate(inputs["input_ids"]):
+        # locate the last "<|im_start|> assistant" pair – that’s the answer we want
+        starts = (ids == IM_START).nonzero(as_tuple=True)[0]
+        tgt_start = None
+        for s in reversed(starts.tolist()):
+            if s + 1 < len(ids) and ids[s + 1] == ASSISTANT:
+                tgt_start = s + 2  # first token after “assistant”
+                break
+        if tgt_start is None:
+            raise ValueError("no assistant response found in input")
+        else:
+            labels[i, :tgt_start] = -100  # ignore system/user & image tokens
+
+    inputs["labels"] = labels
+
+    return inputs
+
+def _strip_answer(conv: list[dict]) -> list[dict]:
+    """Remove the final assistant message so the model must predict it."""
+    if conv and conv[-1]["role"] == "assistant":
+        return conv[:-1]
+    return conv
+
+def collate(batch: list[dict[str, Any]], processor: Any, eval: bool = False):
+    conversations = [strip_null_images(item["messages"]) for item in batch]
+    if eval:
+        conversations = [_strip_answer(conv) for conv in conversations]
+
+        texts = [
+            processor.apply_chat_template(c, add_generation_prompt=eval, tokenize=False)
+            for c in conversations
+        ]
+
+        image_inputs, _ = process_vision_info(conversations)  # type: ignore
+
+        inputs = processor(
+            text=texts,
+            images=image_inputs,
+            videos=None,
+            padding=True,
+            return_tensors="pt",
+        )
+
+        inputs = add_labels_to_inputs(inputs)
+        if eval:
+            inputs["bbox"] = [item['bbox'] for item in batch] # type: ignore
+        return inputs

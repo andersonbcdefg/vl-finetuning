@@ -1,18 +1,12 @@
-import random
 from functools import partial
-from math import sqrt
 from pathlib import Path
-
+import time
 import modal
-import torch
-from datasets import concatenate_datasets
 from torch.optim import AdamW
-from tqdm import tqdm
-from typing import Literal
 
 from vl_utils.loss import build_ntl_index, compute_ntl_loss
-from vl_utils.data import strip_null_images, convert_to_messages
-from vl_utils.spatial import parse_point, point_in_bbox, dist_to_center
+from vl_utils.data import collate, load_data
+from vl_utils.evaluate import evaluate
 
 # ------------------------------------------------------------------------- #
 #   Modal image: system packages + Python deps                              #
@@ -55,89 +49,19 @@ image = (
     )
     .pip_install("bitsandbytes")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@4d56f58",
+        "github.com/andersonbcdefg/vl-finetuning.git@41ccc06",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")
         ]
-    )
+    ).pip_install("liger-kernel")
     .entrypoint([])
 )
 
 app = modal.App("finetune-qwen25-vl")
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
 
-# ------------------------------------------------------------------------- #
-# 2️⃣ / 3️⃣  Spatial/point helpers
-# ------------------------------------------------------------------------- #
-def _strip_answer(conv: list[dict]) -> list[dict]:
-    """Remove the final assistant message so the model must predict it."""
-    if conv and conv[-1]["role"] == "assistant":
-        return conv[:-1]
-    return conv
-
-@torch.no_grad()
-def evaluate(model, processor, dataset, device, max_tokens: int = 20, format: Literal["plain", "json", "xml"] = "xml"):
-    from qwen_vl_utils import process_vision_info
-    from transformers.models import GenerationConfig
-
-    model.eval()
-
-    hits, total, dists = 0, 0, []
-
-    for item in tqdm(dataset, desc="eval"):
-        total += 1
-        conv = item["messages"]
-        gt_box = item["bbox"]  # (x1, y1, x2, y2)
-
-        # build inputs just like generation example
-        conv = strip_null_images(conv)
-        conv = _strip_answer(conv)
-        prompt = processor.apply_chat_template(
-            conv, add_generation_prompt=True, tokenize=False
-        )
-        images, videos = process_vision_info(conv)  # type: ignore
-
-        inputs = processor(
-            text=[prompt],
-            images=images,
-            videos=videos,
-            padding=True,
-            return_tensors="pt",
-        ).to(device)
-
-        out_ids = model.generate(
-            **inputs,
-            generation_config=GenerationConfig(
-                do_sample=False,
-                max_new_tokens=max_tokens,
-                temperature=0.0
-            )
-        )
-        pred_txt = processor.tokenizer.decode(
-            out_ids[0][inputs["input_ids"].shape[1] :],
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )
-        point = parse_point(pred_txt, format=format)
-        # print("point:", point)
-        if point is None:
-            print("pred text:", pred_txt)
-        if point:
-            if point_in_bbox(point, gt_box):
-                hits += 1
-            dists.append(dist_to_center(point, gt_box))
-
-    acc = hits / total if total else 0.0
-    mean_dist = sum(dists) / len(dists) if dists else float("nan")
-    return {"accuracy": acc, "mean_center_dist": mean_dist}
-
-
-# ------------------------------------------------------------------------- #
-#                              Training entry-point                         #
-# ------------------------------------------------------------------------- #
 MINUTES = 60
-
 
 @app.function(
     image=image,
@@ -147,115 +71,57 @@ MINUTES = 60
     timeout=240 * MINUTES,
 )
 def train():
-    import math
-
     import torch
     from cut_cross_entropy import linear_cross_entropy  # type: ignore
-    from datasets import load_dataset
-    from qwen_vl_utils import process_vision_info
     from torch.nn.utils import clip_grad_norm_
     from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
 
     # from torchao.optim import AdamW8bit
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+    from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
+    apply_liger_kernel_to_qwen2_5_vl()
 
     # --------------------------- config -----------------------------------
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
-    dataset_id = "Hcompany/WebClick"
-    groundui_id = "agent-studio/GroundUI-18K"
     out_dir = Path("/root/checkpoints/qwen").expanduser()
-    epochs = 6
-    per_gpu_bs = 2
-    grad_accum = 8
+    per_gpu_bs = 3
+    grad_accum = 4
     lr = 2e-5
-    warmup_frac = 0.05
     wd = 0.01
     max_grad_norm = 1.0
     dtype = torch.bfloat16
     device = torch.device("cuda")
-    use_ntl_loss = True
-    ntl_loss_coeff = 0.3
+    use_ntl_loss = False # True
+    ntl_loss_coeff = 0.0 # 0.3
+    warmup_steps = 100
+    total_steps = 5_000
+    dataset = "both"
+    test_size = 100
+    seed = 42
 
     # ---------------------------- data ------------------------------------
     processor = AutoProcessor.from_pretrained(
         model_id, trust_remote_code=True
     )  # , min_pixels=min_pixels, max_pixels=max_pixels)
     processor.tokenizer.padding_side = "right"
-    ds1 = (
-        load_dataset(dataset_id, split="test")
-        .map(
-            partial(convert_to_messages, format="xml"),
-            batched=True,
-            batch_size=32,
-            num_proc=8,  # type: ignore
-            # load_from_cache_file=False,  # type: ignore
-        )
-        .select_columns(["messages", "bbox"])
-    )
-    ds2 = (
-        load_dataset(groundui_id, split="train")
-        .map(
-            partial(convert_to_messages, bbox_type="absolute", format="xml"),
-            batched=True,
-            batch_size=32,
-            num_proc=8,  # type: ignore
-            # load_from_cache_file=False,  # type: ignore
-        )
-        .select_columns(["messages", "bbox"])
-    )
-    ds = concatenate_datasets([ds1, ds2])  # type: ignore
-    random.seed(42)
-    test_ids = random.sample(range(len(ds)), 100)
-    train = ds.select([x for x in range(len(ds)) if x not in test_ids])  # type: ignore
-    test = ds.select(test_ids)  # type: ignore
-
-    def collate_fn(batch):
-        conversations = [strip_null_images(item["messages"]) for item in batch]
-
-        texts = [
-            processor.apply_chat_template(c, tokenize=False) for c in conversations
-        ]
-
-        image_inputs, _ = process_vision_info(conversations)  # type: ignore
-
-        inputs = processor(
-            text=texts,
-            images=image_inputs,
-            videos=None,
-            padding=True,
-            return_tensors="pt",
-        )
-
-        labels = inputs["input_ids"].clone()
-
-        # compute loss only on completion
-        IM_START = 151644
-        ASSISTANT = 77091
-
-        for i, ids in enumerate(inputs["input_ids"]):
-            # locate the last "<|im_start|> assistant" pair – that’s the answer we want
-            starts = (ids == IM_START).nonzero(as_tuple=True)[0]
-            tgt_start = None
-            for s in reversed(starts.tolist()):
-                if s + 1 < len(ids) and ids[s + 1] == ASSISTANT:
-                    tgt_start = s + 2  # first token after “assistant”
-                    break
-            if tgt_start is None:
-                raise ValueError("no assistant response found in input")
-            else:
-                labels[i, :tgt_start] = -100  # ignore system/user & image tokens
-
-        inputs["labels"] = labels
-        return inputs
+    train, test = load_data(dataset, test_size, seed)
 
     train_dl = DataLoader(
         train,  # type: ignore
         batch_size=per_gpu_bs,
         shuffle=True,
-        num_workers=0,
+        num_workers=4,
         pin_memory=True,
-        collate_fn=collate_fn,
+        collate_fn=partial(collate, processor=processor)
+    )
+    test_dl = DataLoader(
+        test,  # type: ignore
+        batch_size=1,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=partial(collate, processor=processor, eval=True)
     )
 
     # ---------------------------- model -----------------------------------
@@ -278,9 +144,6 @@ def train():
     # ----------------------- optimiser & sched ---------------------------
     # opt = AdamW8bit(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
     opt = AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
-
-    total_steps = math.ceil(len(train_dl) / grad_accum) * epochs
-    warmup_steps = int(total_steps * warmup_frac)
     steps_so_far = 0
 
     def lr_lambda(step):
@@ -292,15 +155,20 @@ def train():
     sched = LambdaLR(opt, lr_lambda)
 
     # do initial eval
-    results = evaluate(model, processor, test, device)
+    results = evaluate(model, processor, test_dl, device)
     print(
         f"📊 accuracy: {results['accuracy']:.3%} | "
         f"avg centre-distance: {results['mean_center_dist']:.4f}"
     )
 
     # --------------------------- training ---------------------------------
-    for ep in range(epochs):
-        # pbar = tqdm(dl, desc=f"epoch {ep + 1}/{epochs}", leave=False)
+    last_step = time.time()
+    epoch = 0
+    while True:
+        if steps_so_far >= total_steps:
+            break
+        epoch += 1
+        print(f"=== Epoch {epoch} ===")
         opt.zero_grad(set_to_none=True)
 
         for step, batch in enumerate(train_dl, 1):
@@ -343,9 +211,12 @@ def train():
 
             normalized_loss.backward()
 
-            if step % grad_accum == 0:
+            if steps_so_far % grad_accum == 0:
+                now = time.time()
+                step_time = now - last_step
+                last_step = now
                 print(
-                    f"Step: {step}/{len(train) // per_gpu_bs}, CE: {ce_loss.item():.3f}, NTL: {ntl_loss.item()}"
+                    f"Step: {steps_so_far}/{total_steps}, CE: {ce_loss.item():.3f}, NTL: {ntl_loss.item():.3f}, Time: {step_time:.2f}"
                 )
                 clip_grad_norm_(model.parameters(), max_grad_norm)
                 opt.step()
@@ -353,7 +224,7 @@ def train():
                 opt.zero_grad(set_to_none=True)
 
             # ------------- checkpoint ----------------------------------------
-            if steps_so_far % 1000 == 0:
+            if steps_so_far % 250 == 0:
                 save_path = out_dir / f"step-{steps_so_far}"
                 save_path.mkdir(parents=True, exist_ok=True)
                 model.save_pretrained(save_path, safe_serialization=True)
@@ -361,11 +232,15 @@ def train():
                 print(f"✅ saved {save_path}")
 
                 # ------------- evaluate ----------------------------------------
-                results = evaluate(model, processor, test, device)
+                results = evaluate(model, processor, test_dl, device)
                 print(
                     f"📊 accuracy: {results['accuracy']:.3%} | "
                     f"avg centre-distance: {results['mean_center_dist']:.4f}"
                 )
+                last_step = time.time() # shouldn't be abnormally long step time after eval
+
+            if steps_so_far >= total_steps:
+                break
 
     save_path = out_dir / "final_ckpt"
     save_path.mkdir(parents=True, exist_ok=True)
@@ -374,7 +249,7 @@ def train():
     print(f"✅ saved {save_path}")
 
     # ------------- evaluate ----------------------------------------
-    results = evaluate(model, processor, test, device)
+    results = evaluate(model, processor, test_dl, device)
     print(
         f"📊 accuracy: {results['accuracy']:.3%} | "
         f"avg centre-distance: {results['mean_center_dist']:.4f}"
