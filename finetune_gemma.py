@@ -49,7 +49,7 @@ image = (
     )
     .pip_install("bitsandbytes", "liger-kernel")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@feb677d",
+        "github.com/andersonbcdefg/vl-finetuning.git@ce918aa",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")
@@ -77,7 +77,7 @@ def train():
     from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
 
-    # from torchao.optim import AdamW8bit
+    import bitsandbytes as bnb
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
     from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
     apply_liger_kernel_to_qwen2_5_vl()
@@ -85,7 +85,7 @@ def train():
     # --------------------------- config -----------------------------------
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     out_dir = Path("/root/checkpoints/qwen").expanduser()
-    per_gpu_bs = 3
+    per_gpu_bs = 4
     grad_accum = 4
     lr = 2e-5
     wd = 0.01
@@ -143,7 +143,7 @@ def train():
 
     # ----------------------- optimiser & sched ---------------------------
     # opt = AdamW8bit(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
-    opt = AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
+    opt = bnb.optim.AdamW8bit(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
     steps_so_far = 0
 
     def lr_lambda(step):
@@ -193,21 +193,21 @@ def train():
                     ignore_index=-100,  # same semantics as F.cross_entropy
                 )
 
-                if use_ntl_loss:
-                    ntl_loss = ntl_loss_coeff * compute_ntl_loss(
-                        num_ids,
-                        num_vals,
-                        token_id_to_val,
-                        last_hidden,
-                        labels,
-                        lm_weight,
-                    )
-                else:
-                    ntl_loss = torch.tensor(
-                        0.0, dtype=ce_loss.dtype, device=ce_loss.device
-                    )
+                # if use_ntl_loss:
+                #     ntl_loss = ntl_loss_coeff * compute_ntl_loss(
+                #         num_ids,
+                #         num_vals,
+                #         token_id_to_val,
+                #         last_hidden,
+                #         labels,
+                #         lm_weight,
+                #     )
+                # else:
+                #     ntl_loss = torch.tensor(
+                #         0.0, dtype=ce_loss.dtype, device=ce_loss.device
+                #     )
 
-                normalized_loss = (ce_loss + ntl_loss) / grad_accum
+                normalized_loss = (ce_loss / grad_accum) #  + ntl_loss) / grad_accum
 
             normalized_loss.backward()
 
@@ -216,7 +216,7 @@ def train():
                 step_time = now - last_step
                 last_step = now
                 print(
-                    f"Step: {steps_so_far}/{total_steps}, CE: {ce_loss.item():.3f}, NTL: {ntl_loss.item():.3f}, Time: {step_time:.2f}"
+                    f"Step: {steps_so_far}/{total_steps}, CE: {ce_loss.item():.3f}, Time: {step_time:.2f}s, LR: {sched.get_last_lr()[0]:.4f}"
                 )
                 clip_grad_norm_(model.parameters(), max_grad_norm)
                 opt.step()

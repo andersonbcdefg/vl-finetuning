@@ -33,7 +33,7 @@ def _load_one(dataset_name: str):
         batched=True,
         batch_size=32,
         num_proc=8,  # type: ignore
-        load_from_cache_file=False,  # type: ignore
+        # load_from_cache_file=False,  # type: ignore
     ).select_columns(["messages", "bbox"])
 
     return ds
