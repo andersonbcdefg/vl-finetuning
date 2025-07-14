@@ -5,7 +5,7 @@ import random
 import torch
 
 from PIL import Image, ImageFile
-from qwen_vl_utils import smart_resize
+from qwen_vl_utils import smart_resize, process_vision_info
 from typing import Literal, Any
 from datasets import load_dataset, concatenate_datasets, Dataset
 from functools import partial

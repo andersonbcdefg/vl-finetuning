@@ -47,14 +47,14 @@ image = (
     .pip_install(
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
     )
-    .pip_install("bitsandbytes")
+    .pip_install("bitsandbytes", "liger-kernel")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@117ad7f",
+        "github.com/andersonbcdefg/vl-finetuning.git@6cb920d",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")
         ]
-    ).pip_install("liger-kernel")
+    )
     .entrypoint([])
 )
 
