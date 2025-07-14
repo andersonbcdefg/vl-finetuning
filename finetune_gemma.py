@@ -49,7 +49,7 @@ image = (
     )
     .pip_install("bitsandbytes")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@41ccc06",
+        "github.com/andersonbcdefg/vl-finetuning.git@117ad7f",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")

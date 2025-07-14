@@ -22,8 +22,8 @@ class DatasetConfig:
     bbox_type: Literal["absolute", "relative"]
 
 DATASETS = {
-    "webclick": DatasetConfig("webclick", "test", "absolute"),
-    "groundui-1k": DatasetConfig("groundui-1k", "train", "absolute"),
+    "webclick": DatasetConfig("Hcompany/WebClick", "test", "absolute"),
+    "groundui-1k": DatasetConfig("agent-studio/GroundUI-1K", "train", "absolute"),
 }
 
 def _load_one(dataset_name: str):
