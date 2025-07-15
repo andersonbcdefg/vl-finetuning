@@ -2,6 +2,7 @@ from functools import partial
 from pathlib import Path
 import time
 import modal
+import json
 from torch.optim import AdamW
 
 from vl_utils.loss import build_ntl_index, compute_ntl_loss
@@ -49,7 +50,7 @@ image = (
     )
     .pip_install("bitsandbytes", "liger-kernel")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@ce918aa",
+        "github.com/andersonbcdefg/vl-finetuning.git@06d9be1",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")
@@ -60,6 +61,7 @@ image = (
 
 app = modal.App("finetune-qwen25-vl")
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
+metrics_vol = modal.Volume.from_name("vl-ft-metrics", create_if_missing=True)
 
 MINUTES = 60
 
@@ -67,10 +69,13 @@ MINUTES = 60
     image=image,
     secrets=[modal.Secret.from_name("HF-SECRET")],
     gpu="H100",
-    volumes={"/root/.cache/huggingface": hf_cache_vol},
+    volumes={
+        "/root/.cache/huggingface": hf_cache_vol,
+        "/metrics": metrics_vol
+    },
     timeout=240 * MINUTES,
 )
-def train():
+def train(run_name: str):
     import torch
     from cut_cross_entropy import linear_cross_entropy  # type: ignore
     from torch.nn.utils import clip_grad_norm_
@@ -92,8 +97,6 @@ def train():
     max_grad_norm = 1.0
     dtype = torch.bfloat16
     device = torch.device("cuda")
-    use_ntl_loss = False # True
-    ntl_loss_coeff = 0.0 # 0.3
     warmup_steps = 100
     total_steps = 5_000
     dataset = "both"
@@ -106,6 +109,10 @@ def train():
     )  # , min_pixels=min_pixels, max_pixels=max_pixels)
     processor.tokenizer.padding_side = "right"
     train, test = load_data(dataset, test_size, seed)
+
+    # figure out the variation in instruction lengths; consider removing long ones
+    print(train.column_names)
+    return
 
     train_dl = DataLoader(
         train,  # type: ignore
@@ -134,12 +141,13 @@ def train():
     ).to(device)  # type: ignore
     model.train()
 
+    for n, p in model.named_parameters():
+        print(n, p.requires_grad)
+
+    return
+
     backbone = model.model  # same params, no LM head
     lm_weight = model.lm_head.weight  # shared weight matrix (V, H)
-
-    num_ids, num_vals, token_id_to_val = build_ntl_index(
-        processor.tokenizer, lm_weight.size(0)
-    )
 
     # ----------------------- optimiser & sched ---------------------------
     # opt = AdamW8bit(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
@@ -154,12 +162,20 @@ def train():
 
     sched = LambdaLR(opt, lr_lambda)
 
+    train_metrics = []
+    eval_metrics = []
+
     # do initial eval
     results = evaluate(model, processor, test_dl, device)
     print(
         f"📊 accuracy: {results['accuracy']:.3%} | "
         f"avg centre-distance: {results['mean_center_dist']:.4f}"
     )
+    eval_metrics.append({
+        "step": steps_so_far,
+        "accuracy": results["accuracy"],
+        "mean_center_dist": results["mean_center_dist"]
+    })
 
     # --------------------------- training ---------------------------------
     last_step = time.time()
@@ -192,20 +208,10 @@ def train():
                     shift=1,  # predict next token
                     ignore_index=-100,  # same semantics as F.cross_entropy
                 )
-
-                # if use_ntl_loss:
-                #     ntl_loss = ntl_loss_coeff * compute_ntl_loss(
-                #         num_ids,
-                #         num_vals,
-                #         token_id_to_val,
-                #         last_hidden,
-                #         labels,
-                #         lm_weight,
-                #     )
-                # else:
-                #     ntl_loss = torch.tensor(
-                #         0.0, dtype=ce_loss.dtype, device=ce_loss.device
-                #     )
+                train_metrics.append({
+                    "step": steps_so_far,
+                    "loss": ce_loss.item()
+                })
 
                 normalized_loss = (ce_loss / grad_accum) #  + ntl_loss) / grad_accum
 
@@ -237,6 +243,11 @@ def train():
                     f"📊 accuracy: {results['accuracy']:.3%} | "
                     f"avg centre-distance: {results['mean_center_dist']:.4f}"
                 )
+                eval_metrics.append({
+                    "step": steps_so_far,
+                    "accuracy": results["accuracy"],
+                    "mean_center_dist": results["mean_center_dist"]
+                })
                 last_step = time.time() # shouldn't be abnormally long step time after eval
 
             if steps_so_far >= total_steps:
@@ -254,5 +265,18 @@ def train():
         f"📊 accuracy: {results['accuracy']:.3%} | "
         f"avg centre-distance: {results['mean_center_dist']:.4f}"
     )
+    eval_metrics.append({
+        "step": steps_so_far,
+        "accuracy": results["accuracy"],
+        "mean_center_dist": results["mean_center_dist"]
+    })
+
+    print("saving metrics...")
+    out_dir = f"/metrics/{run_name}"
+    with open(f"{out_dir}/train.json", "w") as f:
+        json.dump(train_metrics, f)
+
+    with open(f"{out_dir}/eval.json", "w") as f:
+        json.dump(eval_metrics, f)
 
     print("🎉 training complete")

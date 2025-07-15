@@ -33,8 +33,8 @@ def _load_one(dataset_name: str):
         batched=True,
         batch_size=32,
         num_proc=8,  # type: ignore
-        # load_from_cache_file=False,  # type: ignore
-    ).select_columns(["messages", "bbox"])
+        load_from_cache_file=False,  # type: ignore
+    ).select_columns(["messages", "bbox", "instruction"])
 
     return ds
 
@@ -148,7 +148,7 @@ def convert_to_messages(batch: dict, bbox_type="relative", format: Literal["plai
         else:
             bboxes.append((x1 * w_scale, y1 * h_scale, x2 * w_scale, y2 * h_scale))  # type: ignore
 
-    return {"messages": out, "bbox": bboxes}
+    return {"messages": out, "bbox": bboxes, "instruction": batch['instruction']}
 
 
 def strip_null_images(convs):
