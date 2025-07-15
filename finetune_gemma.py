@@ -4,6 +4,8 @@ import time
 import modal
 import json
 from torch.optim import AdamW
+from collections import Counter
+import torch.nn as nn
 
 from vl_utils.loss import build_ntl_index, compute_ntl_loss
 from vl_utils.data import collate, load_data
@@ -50,7 +52,7 @@ image = (
     )
     .pip_install("bitsandbytes", "liger-kernel")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@ee03dc3",
+        "github.com/andersonbcdefg/vl-finetuning.git@292673e",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")
@@ -64,6 +66,11 @@ hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=Tru
 metrics_vol = modal.Volume.from_name("vl-ft-metrics", create_if_missing=True)
 
 MINUTES = 60
+
+def _freeze_layers(model: nn.Module, target: str):
+    for n, p in model.named_parameters():
+        if target in n:
+            p.requires_grad = False
 
 @app.function(
     image=image,
@@ -108,13 +115,14 @@ def train(run_name: str):
         model_id, trust_remote_code=True
     )  # , min_pixels=min_pixels, max_pixels=max_pixels)
     processor.tokenizer.padding_side = "right"
-    train, test = load_data(dataset, test_size, seed)
+    train, test = load_data(dataset, test_size, seed, cached=True)
+    # remove rare long instructions to keep memory predictable
+    train = train.filter(lambda x: x['instruction_length'] <= 12)
 
     # figure out the variation in instruction lengths; consider removing long ones
-    lengths = train['instruction_length']
-    print(lengths)
-
-    return
+    lengths = list(train['instruction_length'])
+    print(Counter(lengths))
+    # print(lengths)
 
     train_dl = DataLoader(
         train,  # type: ignore
@@ -140,13 +148,17 @@ def train(run_name: str):
         attn_implementation="flash_attention_2",
         trust_remote_code=True,
         device_map="auto",
-    ).to(device)  # type: ignore
+    )# .to(device)  # type: ignore
     model.train()
 
-    for n, p in model.named_parameters():
-        print(n, p.requires_grad)
+    print("memory after loading model:")
+    print(torch.cuda.memory_allocated()/1e9)
 
     return
+
+    # save some memory
+    _freeze_layers(model, "visual.patch_embed")
+    _freeze_layers(model, "visual.blocks")
 
     backbone = model.model  # same params, no LM head
     lm_weight = model.lm_head.weight  # shared weight matrix (V, H)
@@ -192,6 +204,7 @@ def train(run_name: str):
         for step, batch in enumerate(train_dl, 1):
             steps_so_far += 1
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
+            # print("shape:", batch['input_ids'].shape)
             with torch.autocast("cuda", dtype=dtype):
                 labels = batch.pop("labels")
 
