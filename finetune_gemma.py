@@ -111,8 +111,7 @@ def train(run_name: str):
     train, test = load_data(dataset, test_size, seed)
 
     # figure out the variation in instruction lengths; consider removing long ones
-    print(train.column_names)
-    return
+    lengths = train['instruction_lengths']
 
     train_dl = DataLoader(
         train,  # type: ignore
