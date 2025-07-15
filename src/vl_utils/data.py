@@ -26,14 +26,14 @@ DATASETS = {
     "groundui-1k": DatasetConfig("agent-studio/GroundUI-1K", "train", "absolute"),
 }
 
-def _load_one(dataset_name: str):
+def _load_one(dataset_name: str, cached=True):
     cfg = DATASETS[dataset_name]
     ds = load_dataset(cfg.repo_id, split=cfg.split).map(
         partial(convert_to_messages, bbox_type=cfg.bbox_type, format="xml"),
         batched=True,
         batch_size=32,
         num_proc=8,  # type: ignore
-        load_from_cache_file=False,  # type: ignore
+        load_from_cache_file=cached  # type: ignore
     ).select_columns(["messages", "bbox", "instruction_length"])
 
     return ds
@@ -41,14 +41,17 @@ def _load_one(dataset_name: str):
 def load_data(
     dataset: Literal["webclick", "groundui-1k", "both"] = "webclick",
     test_size: int = 100,
-    seed: int = 42
+    seed: int = 42,
+    cached: bool = True
 ):
     if dataset == "both":
         dataset_names = ["webclick", "groundui-1k"]
     else:
         dataset_names = [dataset]
 
-    loaded = [_load_one(ds_name) for ds_name in dataset_names]
+    loaded = [
+        _load_one(ds_name, cached=cached) for ds_name in dataset_names
+    ]
 
     if len(loaded) == 1:
         ds = loaded[0]

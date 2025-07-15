@@ -50,7 +50,7 @@ image = (
     )
     .pip_install("bitsandbytes", "liger-kernel")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@06d9be1",
+        "github.com/andersonbcdefg/vl-finetuning.git@ee03dc3",
         git_user="andersonbcdefg",
         secrets=[
             modal.Secret.from_name("my-github-secret")
@@ -111,7 +111,10 @@ def train(run_name: str):
     train, test = load_data(dataset, test_size, seed)
 
     # figure out the variation in instruction lengths; consider removing long ones
-    lengths = train['instruction_lengths']
+    lengths = train['instruction_length']
+    print(lengths)
+
+    return
 
     train_dl = DataLoader(
         train,  # type: ignore
