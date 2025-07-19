@@ -24,11 +24,32 @@ class DatasetConfig:
 DATASETS = {
     "webclick": DatasetConfig("Hcompany/WebClick", "test", "relative"),
     "groundui-1k": DatasetConfig("agent-studio/GroundUI-1K", "train", "absolute"),
+    "seeclick-5": DatasetConfig("andersonbcdefg/seeclick-10k-hq-annotated", "train", "relative"),
+    "seeclick-3-4": DatasetConfig("andersonbcdefg/seeclick-10k-mid-q-annotated", "train", "relative"),
+    "seeclick-1-2": DatasetConfig("andersonbcdefg/seeclick-10k-low-q-annotated", "train", "relative"),
+    "seeclick-0": DatasetConfig("andersonbcdefg/seeclick-10k-low-q-annotated", "train", "relative"),
 }
+
+def explode_elements(examples):
+    # Produce one record per element
+    return [
+        {
+            "image":       example["image"],
+            "score":       example["score"],
+            "instruction": elt["instruction"],
+            "bbox":        elt["bbox"],
+        }
+        for example in examples
+        for elt in example["elements"]
+    ]
 
 def _load_one(dataset_name: str, cached=True):
     cfg = DATASETS[dataset_name]
-    ds = load_dataset(cfg.repo_id, split=cfg.split).map(
+    ds: Dataset = load_dataset(cfg.repo_id, split=cfg.split) # type: ignore
+    if "elements" in ds.column_names:
+        ds = ds.map(explode_elements, batched=True).select_columns(["image", "instruction", "bbox"])
+
+    ds = ds.map(
         partial(convert_to_messages, bbox_type=cfg.bbox_type, format="xml"),
         batched=True,
         batch_size=32,
@@ -39,15 +60,18 @@ def _load_one(dataset_name: str, cached=True):
     return ds
 
 def load_data(
-    dataset: Literal["webclick", "groundui-1k", "both"] = "webclick",
+    datasets: str | list[str] = "webclick",
     test_size: int = 100,
     seed: int = 42,
     cached: bool = True
 ):
-    if dataset == "both":
-        dataset_names = ["webclick", "groundui-1k"]
+    if isinstance(datasets, str):
+        dataset_names = [datasets]
     else:
-        dataset_names = [dataset]
+        dataset_names = datasets
+
+    for dsn in dataset_names:
+        assert dsn in DATASETS, f"dataset {dsn} not found"
 
     loaded = [
         _load_one(ds_name, cached=cached) for ds_name in dataset_names

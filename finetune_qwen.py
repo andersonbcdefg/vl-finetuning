@@ -1,65 +1,18 @@
+import json
+import time
+from collections import Counter
 from functools import partial
 from pathlib import Path
-import time
-import modal
-import json
-from torch.optim import AdamW
-from collections import Counter
-import torch.nn as nn
 
-from vl_utils.loss import build_ntl_index, compute_ntl_loss
-from vl_utils.data import collate, load_data
-from vl_utils.evaluate import evaluate
+import modal
+import torch.nn as nn
 
 # ------------------------------------------------------------------------- #
 #   Modal image: system packages + Python deps                              #
 # ------------------------------------------------------------------------- #
-python_version = "3.11"
-flash_attn_version = "2.6.3"
-pytorch_version = "2.7.1"
-cuda_version = "12.8.0"  # should be no greater than host CUDA version
-flavor = "devel"  #  includes full CUDA toolkit
-operating_sys = "ubuntu22.04"
-tag = f"{cuda_version}-{flavor}-{operating_sys}"
-flash_attn_release = "flash_attn-2.6.3+cu128torch2.7-cp311-cp311-linux_x86_64.whl"
-
-image = (
-    modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.11")
-    .apt_install("git")
-    .pip_install("torch==2.7.1")
-    .run_commands(  # add flash-attn
-        f"pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.9/{flash_attn_release}"
-    )
-    .pip_install(
-        "transformers",
-        "datasets",
-        "torchvision",
-        "qwen-vl-utils",
-        "reportlab",
-        "matplotlib",
-        "numpy",
-        "accelerate",
-        "datasets",
-        "trl",
-        "peft",
-        "timm",
-        "pillow",
-        "hf_xet",
-        "torchao",
-    )
-    .pip_install(
-        "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
-    )
-    .pip_install("bitsandbytes", "liger-kernel")
-    .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@292673e",
-        git_user="andersonbcdefg",
-        secrets=[
-            modal.Secret.from_name("my-github-secret")
-        ]
-    )
-    .entrypoint([])
-)
+from images import qwen_image as image
+from vl_utils.data import collate, load_data
+from vl_utils.evaluate import evaluate
 
 app = modal.App("finetune-qwen25-vl")
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
@@ -67,31 +20,30 @@ metrics_vol = modal.Volume.from_name("vl-ft-metrics", create_if_missing=True)
 
 MINUTES = 60
 
+
 def _freeze_layers(model: nn.Module, target: str):
     for n, p in model.named_parameters():
         if target in n:
             p.requires_grad = False
 
+
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name("HF-SECRET")],
     gpu="H100",
-    volumes={
-        "/root/.cache/huggingface": hf_cache_vol,
-        "/metrics": metrics_vol
-    },
+    volumes={"/root/.cache/huggingface": hf_cache_vol, "/metrics": metrics_vol},
     timeout=240 * MINUTES,
 )
 def train(run_name: str):
+    import bitsandbytes as bnb
     import torch
     from cut_cross_entropy import linear_cross_entropy  # type: ignore
+    from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
     from torch.nn.utils import clip_grad_norm_
     from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
-
-    import bitsandbytes as bnb
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-    from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
+
     apply_liger_kernel_to_qwen2_5_vl()
 
     # --------------------------- config -----------------------------------
@@ -106,7 +58,7 @@ def train(run_name: str):
     device = torch.device("cuda")
     warmup_steps = 100
     total_steps = 5_000
-    dataset = "both"
+    dataset = "seeclick-5"
     test_size = 100
     seed = 42
 
@@ -117,10 +69,10 @@ def train(run_name: str):
     processor.tokenizer.padding_side = "right"
     train, test = load_data(dataset, test_size, seed, cached=True)
     # remove rare long instructions to keep memory predictable
-    train = train.filter(lambda x: x['instruction_length'] <= 12)
+    train = train.filter(lambda x: x["instruction_length"] <= 12)
 
     # figure out the variation in instruction lengths; consider removing long ones
-    lengths = list(train['instruction_length'])
+    lengths = list(train["instruction_length"])
     print(Counter(lengths))
     # print(lengths)
 
@@ -130,7 +82,7 @@ def train(run_name: str):
         shuffle=True,
         num_workers=4,
         pin_memory=True,
-        collate_fn=partial(collate, processor=processor)
+        collate_fn=partial(collate, processor=processor),
     )
     test_dl = DataLoader(
         test,  # type: ignore
@@ -138,7 +90,7 @@ def train(run_name: str):
         shuffle=False,
         num_workers=4,
         pin_memory=True,
-        collate_fn=partial(collate, processor=processor, eval=True)
+        collate_fn=partial(collate, processor=processor, eval=True),
     )
 
     # ---------------------------- model -----------------------------------
@@ -148,11 +100,11 @@ def train(run_name: str):
         attn_implementation="flash_attention_2",
         trust_remote_code=True,
         device_map="auto",
-    )# .to(device)  # type: ignore
+    )  # .to(device)  # type: ignore
     model.train()
 
     print("memory after loading model:")
-    print(torch.cuda.memory_allocated()/1e9)
+    print(torch.cuda.memory_allocated() / 1e9)
 
     return
 
@@ -165,7 +117,9 @@ def train(run_name: str):
 
     # ----------------------- optimiser & sched ---------------------------
     # opt = AdamW8bit(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
-    opt = bnb.optim.AdamW8bit(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
+    opt = bnb.optim.AdamW8bit(
+        model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd
+    )
     steps_so_far = 0
 
     def lr_lambda(step):
@@ -185,11 +139,13 @@ def train(run_name: str):
         f"📊 accuracy: {results['accuracy']:.3%} | "
         f"avg centre-distance: {results['mean_center_dist']:.4f}"
     )
-    eval_metrics.append({
-        "step": steps_so_far,
-        "accuracy": results["accuracy"],
-        "mean_center_dist": results["mean_center_dist"]
-    })
+    eval_metrics.append(
+        {
+            "step": steps_so_far,
+            "accuracy": results["accuracy"],
+            "mean_center_dist": results["mean_center_dist"],
+        }
+    )
 
     # --------------------------- training ---------------------------------
     last_step = time.time()
@@ -223,12 +179,9 @@ def train(run_name: str):
                     shift=1,  # predict next token
                     ignore_index=-100,  # same semantics as F.cross_entropy
                 )
-                train_metrics.append({
-                    "step": steps_so_far,
-                    "loss": ce_loss.item()
-                })
+                train_metrics.append({"step": steps_so_far, "loss": ce_loss.item()})
 
-                normalized_loss = (ce_loss / grad_accum) #  + ntl_loss) / grad_accum
+                normalized_loss = ce_loss / grad_accum  #  + ntl_loss) / grad_accum
 
             normalized_loss.backward()
 
@@ -258,12 +211,16 @@ def train(run_name: str):
                     f"📊 accuracy: {results['accuracy']:.3%} | "
                     f"avg centre-distance: {results['mean_center_dist']:.4f}"
                 )
-                eval_metrics.append({
-                    "step": steps_so_far,
-                    "accuracy": results["accuracy"],
-                    "mean_center_dist": results["mean_center_dist"]
-                })
-                last_step = time.time() # shouldn't be abnormally long step time after eval
+                eval_metrics.append(
+                    {
+                        "step": steps_so_far,
+                        "accuracy": results["accuracy"],
+                        "mean_center_dist": results["mean_center_dist"],
+                    }
+                )
+                last_step = (
+                    time.time()
+                )  # shouldn't be abnormally long step time after eval
 
             if steps_so_far >= total_steps:
                 break
@@ -280,11 +237,13 @@ def train(run_name: str):
         f"📊 accuracy: {results['accuracy']:.3%} | "
         f"avg centre-distance: {results['mean_center_dist']:.4f}"
     )
-    eval_metrics.append({
-        "step": steps_so_far,
-        "accuracy": results["accuracy"],
-        "mean_center_dist": results["mean_center_dist"]
-    })
+    eval_metrics.append(
+        {
+            "step": steps_so_far,
+            "accuracy": results["accuracy"],
+            "mean_center_dist": results["mean_center_dist"],
+        }
+    )
 
     print("saving metrics...")
     out_dir = f"/metrics/{run_name}"
