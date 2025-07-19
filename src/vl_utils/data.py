@@ -53,7 +53,7 @@ def build_split_datasets(name: str, split: str = "train"):
             elems = row["elements"]
             if isinstance(elems, str):      # some datasets store JSON text
                 elems = json.loads(elems)
-            if elems and isinstance(elems[0], list):  # GroundUI‑1K style
+            if elems and isinstance(elems[0], list):  # sometimes nested because i'm stupid
                 elems = elems[0]
 
             for el in elems:
@@ -69,7 +69,7 @@ def build_split_datasets(name: str, split: str = "train"):
                 "bbox": row["bbox"],
             })
 
-    images_ds = Dataset.from_list(img_rows).cast_column("image", Image())
+    images_ds = Dataset.from_list(img_rows)
     ann_ds    = Dataset.from_list(ann_rows)
     return images_ds, ann_ds
 
