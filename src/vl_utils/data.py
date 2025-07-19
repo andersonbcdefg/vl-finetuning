@@ -1,6 +1,6 @@
 import base64
 import io
-from os import setreuid
+import json
 import random
 import torch
 
@@ -59,7 +59,8 @@ def _load_one(dataset_name: str, cached=True):
     cfg = DATASETS[dataset_name]
     ds: Dataset = load_dataset(cfg.repo_id, split=cfg.split) # type: ignore
     if "elements" in ds.column_names:
-        ds = ds.map(explode_elements, batched=True).select_columns(["image", "instruction", "bbox"])
+        ds = ds.map(lambda x: {"elements": json.loads(x['elements'])[0]})
+        ds = ds.map(explode_elements, batched=True, remove_columns=["elements"]).select_columns(["image", "instruction", "bbox"])
 
     ds = ds.map(
         partial(convert_to_messages, bbox_type=cfg.bbox_type, format="xml"),
