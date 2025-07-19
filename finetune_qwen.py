@@ -11,7 +11,7 @@ import torch.nn as nn
 #   Modal image: system packages + Python deps                              #
 # ------------------------------------------------------------------------- #
 from images import qwen_image as image
-from vl_utils.data import collate, load_data
+from vl_utils.data import load_datasets, collate_fn
 from vl_utils.evaluate import evaluate
 
 app = modal.App("finetune-qwen25-vl")
@@ -67,13 +67,13 @@ def train(run_name: str):
         model_id, trust_remote_code=True
     )  # , min_pixels=min_pixels, max_pixels=max_pixels)
     processor.tokenizer.padding_side = "right"
-    train, test = load_data(dataset, test_size, seed, cached=True)
+    train, test = load_datasets(dataset, test_size, seed)
     # remove rare long instructions to keep memory predictable
-    train = train.filter(lambda x: x["instruction_length"] <= 12)
+    # train = train.filter(lambda x: x["instruction_length"] <= 12)
 
     # figure out the variation in instruction lengths; consider removing long ones
-    lengths = list(train["instruction_length"])
-    print(Counter(lengths))
+    # lengths = list(train["instruction_length"])
+    # print(Counter(lengths))
     # print(lengths)
 
     train_dl = DataLoader(
@@ -82,7 +82,7 @@ def train(run_name: str):
         shuffle=True,
         num_workers=4,
         pin_memory=True,
-        collate_fn=partial(collate, processor=processor),
+        collate_fn=partial(collate_fn, processor=processor, message_format="xml"),
     )
     test_dl = DataLoader(
         test,  # type: ignore
@@ -90,7 +90,7 @@ def train(run_name: str):
         shuffle=False,
         num_workers=4,
         pin_memory=True,
-        collate_fn=partial(collate, processor=processor, eval=True),
+        collate_fn=partial(collate_fn, processor=processor, eval=True, message_format="xml"),
     )
 
     # ---------------------------- model -----------------------------------
