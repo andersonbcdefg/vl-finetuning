@@ -155,7 +155,7 @@ def load_datasets(
         if "elements" in ds.column_names:
             # Parse elements column
             def parse_elements(example):
-                elements = json.loads(example['elements']) if isinstance(example['elements'], str) else example['elements']
+                elements = json.loads(example['elements'][0]) if isinstance(example['elements'], str) else example['elements']
                 instructions = []
                 bboxes = []
                 for elem in elements:
