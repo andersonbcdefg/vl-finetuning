@@ -30,18 +30,30 @@ DATASETS = {
     "seeclick-0": DatasetConfig("andersonbcdefg/seeclick-10k-low-q-annotated", "train", "relative"),
 }
 
-def explode_elements(examples):
-    # Produce one record per element
-    return [
-        {
-            "image":       example["image"],
-            "score":       example["score"],
-            "instruction": elt["instruction"],
-            "bbox":        elt["bbox"],
-        }
-        for example in examples
-        for elt in example["elements"]
-    ]
+
+def explode_elements(batch):
+    out = {"image": [], "score": [], "instruction": [], "bbox": []}
+    for img, sc, elts in zip(batch["image"], batch["score"], batch["elements"]):
+        for e in elts:                     # one new row per element
+            out["image"].append(img)
+            out["score"].append(sc)
+            out["instruction"].append(e["instruction"])
+            out["bbox"].append(e["bbox"])
+    return out
+
+
+# def explode_elements(examples):
+#     # Produce one record per element
+#     return [
+#         {
+#             "image":       example["image"],
+#             "score":       example["score"],
+#             "instruction": elt["instruction"],
+#             "bbox":        elt["bbox"],
+#         }
+#         for example in examples
+#         for elt in example["elements"]
+#     ]
 
 def _load_one(dataset_name: str, cached=True):
     cfg = DATASETS[dataset_name]
