@@ -11,7 +11,7 @@ import torch.nn as nn
 #   Modal image: system packages + Python deps                              #
 # ------------------------------------------------------------------------- #
 from images import qwen_image as image
-from vl_utils.data import load_datasets, collate_fn
+from vl_utils.data import load_data, create_dataloader
 from vl_utils.evaluate import evaluate
 
 app = modal.App("finetune-qwen25-vl")
@@ -21,9 +21,11 @@ metrics_vol = modal.Volume.from_name("vl-ft-metrics", create_if_missing=True)
 MINUTES = 60
 
 
-def _freeze_layers(model: nn.Module, target: str):
+def _freeze_layers(model: nn.Module, target: str | list[str]):
+    if isinstance(target, str):
+        target = [target]
     for n, p in model.named_parameters():
-        if target in n:
+        if any(t in n for t in target):
             p.requires_grad = False
 
 
@@ -67,30 +69,13 @@ def train(run_name: str):
         model_id, trust_remote_code=True
     )  # , min_pixels=min_pixels, max_pixels=max_pixels)
     processor.tokenizer.padding_side = "right"
-    train, test = load_datasets(dataset, test_size, seed)
-    # remove rare long instructions to keep memory predictable
-    # train = train.filter(lambda x: x["instruction_length"] <= 12)
+    train, test = load_data(dataset, test_size, seed)
 
-    # figure out the variation in instruction lengths; consider removing long ones
-    # lengths = list(train["instruction_length"])
-    # print(Counter(lengths))
-    # print(lengths)
-
-    train_dl = DataLoader(
-        train,  # type: ignore
-        batch_size=per_gpu_bs,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=partial(collate_fn, processor=processor, message_format="xml"),
+    train_dl = create_dataloader(
+        train, processor, batch_size=per_gpu_bs, num_workers=4, eval=False
     )
-    test_dl = DataLoader(
-        test,  # type: ignore
-        batch_size=1,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=partial(collate_fn, processor=processor, eval=True, message_format="xml"),
+    test_dl = create_dataloader(
+        test, processor, batch_size=1, num_workers=4, eval=True
     )
 
     # ---------------------------- model -----------------------------------
@@ -105,8 +90,6 @@ def train(run_name: str):
 
     print("memory after loading model:")
     print(torch.cuda.memory_allocated() / 1e9)
-
-    return
 
     # save some memory
     _freeze_layers(model, "visual.patch_embed")
