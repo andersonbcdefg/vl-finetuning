@@ -94,7 +94,7 @@ qwen_image = (
     )
     .pip_install("bitsandbytes", "liger-kernel")
     .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@b306af6",
+        "github.com/andersonbcdefg/vl-finetuning.git@dd02a55",
         git_user="andersonbcdefg",
         secrets=[modal.Secret.from_name("my-github-secret")],
     )
