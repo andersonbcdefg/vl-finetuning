@@ -30,8 +30,49 @@ DATASETS = {
 # LRU cache size - tune for memory vs speed tradeoff
 MAX_CACHE = 16_384
 
+def _prepare_image(img_bytes, max_pixels: int = MAX_PIXELS):
+    """Decode once, resize, stash as data‑URI."""
+    with PILImage.open(io.BytesIO(img_bytes)) as im:
+        im = im.convert("RGB")
+        orig_w, orig_h = im.size
+        new_h, new_w  = smart_resize(orig_h, orig_w, max_pixels=max_pixels)
+        im = im.resize((new_w, new_h), PILImage.Resampling.BICUBIC)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", optimize=True)
+        data_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        return data_uri, (orig_w, orig_h), (new_w, new_h)
 
-def build_split_datasets(name: str, split: str = "train"):
+def _scale_bbox(
+    bbox: tuple[float, float, float, float],
+    bbox_type: Literal["absolute", "relative"],
+    orig_size: tuple[float, float],
+    new_size: tuple[float, float]
+):
+    orig_w, orig_h = orig_size
+    new_w, new_h = new_size
+
+    x1, y1, x2, y2 = bbox
+    if bbox_type == "relative":
+        scaled_bbox = [x1 * new_w, y1 * new_h, x2 * new_w, y2 * new_h]
+    else:
+        w_scale, h_scale = new_w / orig_w, new_h / orig_h
+        scaled_bbox = [x1 * w_scale, y1 * h_scale, x2 * w_scale, y2 * h_scale]
+
+    return tuple(scaled_bbox)
+
+def _bbox_center(
+    bbox: tuple[float, float, float, float]
+):
+    x1, y1, x2, y2 = bbox
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+
+    return cx, cy
+
+def build_split_datasets(
+    name: str,
+    split: str,
+    bbox_type: Literal["relative", "absolute"]
+):
     """
     Returns:
       images_ds : Dataset(id, image)          # one row per unique image
@@ -43,10 +84,11 @@ def build_split_datasets(name: str, split: str = "train"):
     path2idx, img_rows, ann_rows = {}, [], []
     for row in raw:
         # identify the image
-        path = row["image"]["path"] # type: ignore
+        orig_bytes = path = row["image"]["bytes"] # type: ignore
+        data_uri, orig_size, new_size = _prepare_image(orig_bytes)
         idx  = path2idx.setdefault(path, len(path2idx))
         if idx == len(img_rows):                          # first time we see it
-            img_rows.append({"id": idx, "image": row["image"]}) # type: ignore
+            img_rows.append({"id": idx, "uri": data_uri}) # type: ignore
 
         # explode annotations -----------------------------------------
         if "elements" in row and row["elements"]: # type: ignore
@@ -57,36 +99,27 @@ def build_split_datasets(name: str, split: str = "train"):
                 elems = elems[0]
 
             for el in elems:
+                scaled = _scale_bbox(el["bbox"], bbox_type, orig_size, new_size)
                 ann_rows.append({
                     "img_idx": idx,
                     "instruction": el["instruction"],
-                    "bbox": el["bbox"],
+                    "bbox": scaled,
+                    "center": _bbox_center(scaled), # type: ignore
+                    "size": new_size
                 })
         else:  # simple one‑annotation‑per‑row case
+            scaled = _scale_bbox(row["bbox"], bbox_type, orig_size, new_size) # type: ignore
             ann_rows.append({
                 "img_idx": idx,
                 "instruction": row["instruction"], # type: ignore
-                "bbox": row["bbox"], # type: ignore
+                "bbox": scaled,
+                "center": _bbox_center(scaled), # type: ignore
+                "size": new_size
             })
 
     images_ds = Dataset.from_list(img_rows)
     ann_ds    = Dataset.from_list(ann_rows)
     return images_ds, ann_ds
-
-@lru_cache(maxsize=MAX_CACHE)
-def _prepare_image(key, img_bytes, max_pixels: int = MAX_PIXELS):
-    """Decode once, resize, stash as data‑URI."""
-    with PILImage.open(io.BytesIO(img_bytes)) as im:
-        im = im.convert("RGB")
-        orig_w, orig_h = im.size
-        # unlike  PIL, smart_resize expects h, w for some reason
-        new_h, new_w  = smart_resize(orig_h, orig_w, max_pixels=max_pixels)
-        im = im.resize((new_w, new_h), PILImage.Resampling.BICUBIC)
-
-        buf = io.BytesIO()
-        im.save(buf, format="JPEG", optimize=True)
-        data_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-        return data_uri, (orig_w, orig_h), (new_w, new_h)
 
 class UIAnnotationDataset(torch.utils.data.Dataset):
     """
@@ -97,7 +130,6 @@ class UIAnnotationDataset(torch.utils.data.Dataset):
     """
     def __init__(self, images_ds, ann_ds, bbox_type="relative"):
         self.images_ds, self.ann_ds = images_ds, ann_ds
-        self.bbox_type = bbox_type
 
     def __len__(self):
         return len(self.ann_ds)
@@ -105,30 +137,13 @@ class UIAnnotationDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         ann = self.ann_ds[idx]
         img_row = self.images_ds[ann["img_idx"]]
-        img_bytes = img_row["image"]["bytes"]
-
-        # key = (dataset‑id, img_idx) keeps cache scoped to this dataset
-        key = (id(self), ann["img_idx"])
-        data_uri, (orig_w, orig_h), (new_w, new_h) = _prepare_image(key, img_bytes)
-
-        x1, y1, x2, y2 = ann["bbox"]
-        if self.bbox_type == "relative":
-            bb = (x1 * new_w, y1 * new_h, x2 * new_w, y2 * new_h)
-        else:
-            sx, sy = new_w / orig_w, new_h / orig_h
-            bb = (x1 * sx, y1 * sy, x2 * sx, y2 * sy)
-
-        x1, y1, x2, y2  = bb
-        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-
 
         return {
-            "data_uri": data_uri,
+            "data_uri": img_row['uri'],
             "instruction": ann["instruction"],
-            "bbox": bb,
-            "click": (cx, cy),
-            "orig_size": (orig_w, orig_h),
-            "size": (new_w, new_h),
+            "bbox": ann['bbox'],
+            "click": ann['center'],
+            "size": ann['size']
         }
 
 # ---- collate_fn --------------------------------------------------
@@ -259,8 +274,8 @@ def load_data(
     loaded = []
     for dsn in dataset_names:
         cfg = DATASETS[dsn]
-        img_ds, ann_ds = build_split_datasets(cfg["repo_id"], cfg["split"])
-        ds = UIAnnotationDataset(img_ds, ann_ds, cfg["bbox_type"])
+        img_ds, ann_ds = build_split_datasets(cfg["repo_id"], cfg["split"],  cfg["bbox_type"]) # type: ignore
+        ds = UIAnnotationDataset(img_ds, ann_ds)
         loaded.append(ds)
 
     full_dataset = loaded[0] if len(loaded) == 1 else ConcatDataset(loaded)

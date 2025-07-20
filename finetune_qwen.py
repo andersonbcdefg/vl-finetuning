@@ -1,11 +1,7 @@
 import json
 import time
-from collections import Counter
-from functools import partial
 from pathlib import Path
-
 import modal
-import torch.nn as nn
 
 # ------------------------------------------------------------------------- #
 #   Modal image: system packages + Python deps                              #
@@ -56,42 +52,30 @@ def train(run_name: str):
     warmup_steps = 100
     total_steps = 5_000
     train_dataset = "webclick"
-    # train_dataset = "seeclick-5"
-    # test_dataset = "webclick"
-    test_size = 100
+    test_dataset = "screenspot"
+    eval_every = 750
+    test_size = 250
     seed = 42
 
     # ---------------------------- data ------------------------------------
-    processor = AutoProcessor.from_pretrained(
-        model_id, trust_remote_code=True
-    )  # , min_pixels=min_pixels, max_pixels=max_pixels)
-    processor.tokenizer.padding_side = "right"
+    train_processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+    train_processor.tokenizer.padding_side = "right"
+
+    # evaluation (left‑pad so we can batch)
+    eval_processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+    eval_processor.tokenizer.padding_side = "left"
+    eval_processor.tokenizer.pad_token = eval_processor.tokenizer.eos_token  # safety
+
 
     # test on the same bit of webclick every time
-    train, test = load_data(train_dataset, 100, seed)
-    # train_dl = DataLoader(
-    #     train,  # type: ignore
-    #     batch_size=per_gpu_bs,
-    #     shuffle=True,
-    #     num_workers=4,
-    #     pin_memory=True,
-    #     collate_fn=partial(collate, processor=processor)
-    # )
-    # test_dl = DataLoader(
-    #     test,  # type: ignore
-    #     batch_size=1,
-    #     shuffle=False,
-    #     num_workers=4,
-    #     pin_memory=True,
-    #     collate_fn=partial(collate, processor=processor, eval=True)
-    # )
-    # _, test = load_data(test_dataset, 100, seed)
+    train, _ = load_data(train_dataset, 0, seed)
+    _, test = load_data(test_dataset, test_size, seed)
 
     train_dl = create_dataloader(
-        train, processor, batch_size=per_gpu_bs, num_workers=4, eval=False
+        train, train_processor, batch_size=per_gpu_bs, num_workers=4, eval=False
     )
     test_dl = create_dataloader(
-        test, processor, batch_size=1, num_workers=4, eval=True
+        test, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
     )
 
     # ---------------------------- model -----------------------------------
@@ -108,7 +92,7 @@ def train(run_name: str):
     print(torch.cuda.memory_allocated() / 1e9)
 
     # save some memory
-    _freeze_layers(model, ["visual.patch_embed", "visual.blocks"])
+    freeze_layers(model, ["visual.patch_embed", "visual.blocks"])
 
     backbone = model.model  # same params, no LM head
     lm_weight = model.lm_head.weight  # shared weight matrix (V, H)
@@ -132,7 +116,7 @@ def train(run_name: str):
     eval_metrics = []
 
     # do initial eval
-    results = evaluate(model, processor, test_dl, device)
+    results = evaluate(model, eval_processor, test_dl, device)
     print(
         f"📊 accuracy: {results['accuracy']:.3%} | "
         f"avg centre-distance: {results['mean_center_dist']:.4f}"
@@ -196,15 +180,15 @@ def train(run_name: str):
                 opt.zero_grad(set_to_none=True)
 
             # ------------- checkpoint ----------------------------------------
-            if steps_so_far % 250 == 0:
+            if steps_so_far % eval_every == 0:
                 save_path = out_dir / f"step-{steps_so_far}"
                 save_path.mkdir(parents=True, exist_ok=True)
                 model.save_pretrained(save_path, safe_serialization=True)
-                processor.save_pretrained(save_path)
+                # processor.save_pretrained(save_path)
                 print(f"✅ saved {save_path}")
 
                 # ------------- evaluate ----------------------------------------
-                results = evaluate(model, processor, test_dl, device)
+                results = evaluate(model, eval_processor, test_dl, device)
                 print(
                     f"📊 accuracy: {results['accuracy']:.3%} | "
                     f"avg centre-distance: {results['mean_center_dist']:.4f}"
@@ -226,11 +210,10 @@ def train(run_name: str):
     save_path = out_dir / "final_ckpt"
     save_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(save_path, safe_serialization=True)
-    processor.save_pretrained(save_path)
     print(f"✅ saved {save_path}")
 
     # ------------- evaluate ----------------------------------------
-    results = evaluate(model, processor, test_dl, device)
+    results = evaluate(model, eval_processor, test_dl, device)
     print(
         f"📊 accuracy: {results['accuracy']:.3%} | "
         f"avg centre-distance: {results['mean_center_dist']:.4f}"
