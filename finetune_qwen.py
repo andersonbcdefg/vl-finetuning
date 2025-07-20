@@ -20,6 +20,21 @@ metrics_vol = modal.Volume.from_name("vl-ft-metrics", create_if_missing=True)
 
 MINUTES = 60
 
+def _print_metrics(results: dict):
+  for name, metrics in results.items():
+        print(
+            f"[{name}] 📊 accuracy: {metrics['accuracy']:.3%} | "
+            f"avg centre-distance: {metrics['mean_center_dist']:.4f}"
+        )
+        eval_metrics.append(
+            {
+                "dataset": name,
+                "step": steps_so_far,
+                "accuracy": metrics["accuracy"],
+                "mean_center_dist": metrics["mean_center_dist"],
+            }
+        )
+
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name("HF-SECRET")],
@@ -50,10 +65,12 @@ def train(run_name: str):
     dtype = torch.bfloat16
     device = torch.device("cuda")
     warmup_steps = 100
-    total_steps = 5_000
-    train_dataset = "webclick"
+    total_steps = 2_000
+    train_dataset = "seeclick-5"
+    eval_datasets = ["webclick", "screenspot"]
+    test_size = 125
     test_dataset = "screenspot"
-    eval_every = 750
+    eval_every = 400
     test_size = 250
     seed = 42
 
@@ -66,17 +83,27 @@ def train(run_name: str):
     eval_processor.tokenizer.padding_side = "left"
     eval_processor.tokenizer.pad_token = eval_processor.tokenizer.eos_token  # safety
 
+    # Load training dataset and evaluation datasets separately
+    eval_dataloaders = {}
+    train, test_split = load_data(train_dataset, test_size, seed)
+    
+    # always include test split of the train data in the loader
+    eval_dataloaders["held_out_train"] = create_dataloader(
+      test_split, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
+    )
 
-    # test on the same bit of webclick every time
-    train, _ = load_data(train_dataset, 0, seed)
-    _, test = load_data(test_dataset, test_size, seed)
+    
+    for name in eval_datasets:
+        _, ds = load_data(name, test_size, seed)
+        if ds is not None:
+            eval_dataloaders[name] = create_dataloader(
+                ds, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
+            )
 
     train_dl = create_dataloader(
         train, train_processor, batch_size=per_gpu_bs, num_workers=4, eval=False
     )
-    test_dl = create_dataloader(
-        test, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
-    )
+
 
     # ---------------------------- model -----------------------------------
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -115,19 +142,10 @@ def train(run_name: str):
     train_metrics = []
     eval_metrics = []
 
-    # do initial eval
-    results = evaluate(model, eval_processor, test_dl, device)
-    print(
-        f"📊 accuracy: {results['accuracy']:.3%} | "
-        f"avg centre-distance: {results['mean_center_dist']:.4f}"
-    )
-    eval_metrics.append(
-        {
-            "step": steps_so_far,
-            "accuracy": results["accuracy"],
-            "mean_center_dist": results["mean_center_dist"],
-        }
-    )
+    # initial eval
+    results = evaluate(model, eval_processor, eval_dataloaders, device)
+    _print_metrics(results)
+
 
     # --------------------------- training ---------------------------------
     last_step = time.time()
@@ -187,22 +205,15 @@ def train(run_name: str):
                 # processor.save_pretrained(save_path)
                 print(f"✅ saved {save_path}")
 
-                # ------------- evaluate ----------------------------------------
-                results = evaluate(model, eval_processor, test_dl, device)
-                print(
-                    f"📊 accuracy: {results['accuracy']:.3%} | "
-                    f"avg centre-distance: {results['mean_center_dist']:.4f}"
-                )
-                eval_metrics.append(
-                    {
-                        "step": steps_so_far,
-                        "accuracy": results["accuracy"],
-                        "mean_center_dist": results["mean_center_dist"],
-                    }
-                )
+                
+                # ------------- evaluate ---------------------------------------
+                results = evaluate(model, eval_processor, eval_dataloaders, device)
+                _print_metrics(results)
+                
                 last_step = (
                     time.time()
                 )  # shouldn't be abnormally long step time after eval
+
 
             if steps_so_far >= total_steps:
                 break
@@ -211,23 +222,14 @@ def train(run_name: str):
     save_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(save_path, safe_serialization=True)
     print(f"✅ saved {save_path}")
-
-    # ------------- evaluate ----------------------------------------
-    results = evaluate(model, eval_processor, test_dl, device)
-    print(
-        f"📊 accuracy: {results['accuracy']:.3%} | "
-        f"avg centre-distance: {results['mean_center_dist']:.4f}"
-    )
-    eval_metrics.append(
-        {
-            "step": steps_so_far,
-            "accuracy": results["accuracy"],
-            "mean_center_dist": results["mean_center_dist"],
-        }
-    )
+    
+    # ------------- evaluate ---------------------------------------
+    results = evaluate(model, processor, eval_dataloaders, device)
+    _print_metrics(results)
 
     print("saving metrics...")
     out_dir = f"/metrics/{run_name}"
+    os.makedirs(out_dir, exist_ok=True)
     with open(f"{out_dir}/train.json", "w") as f:
         json.dump(train_metrics, f)
 

@@ -9,7 +9,7 @@ from .spatial import parse_point, point_in_bbox, dist_to_center
 
 
 @torch.no_grad()
-def evaluate(
+def _evaluate_single(
     model,
     processor,
     dataloader,
@@ -17,6 +17,7 @@ def evaluate(
     max_tokens: int = 25,
     format: Literal["plain", "json", "xml"] = "xml",
 ):
+    """Evaluate on a single dataloader and return metrics."""
     model.eval()
 
     hits, total, dists = 0, 0, []
@@ -29,9 +30,10 @@ def evaluate(
         # ───── generation ─────
         generation_config = GenerationConfig(
             do_sample=False,
-            max_new_tokens=max_tokens
+            max_new_tokens=max_tokens,
         )
-        generation_config.temperature = None
+
+        generation_config.temperature = None  # remove the attribute
         gen_ids = model.generate(
             **batch,
             generation_config=generation_config
@@ -59,6 +61,43 @@ def evaluate(
     mean_dist = sum(dists) / len(dists) if dists else float("nan")
     return {"accuracy": acc, "mean_center_dist": mean_dist}
 
+@torch.no_grad()
+def evaluate(
+    model,
+    processor,
+    dataloaders,
+    device,
+    max_tokens: int = 25,
+    format: Literal["plain", "json", "xml"] = "xml",
+):
+    """Evaluate the model on one or more dataloaders.
+
+    ``dataloaders`` may be either a single DataLoader or a mapping of name ->
+    DataLoader. When a mapping is provided a mapping of metrics will be
+    returned for each dataset name.
+    """
+
+    if isinstance(dataloaders, dict):
+        results = {}
+        for name, dl in dataloaders.items():
+            results[name] = _evaluate_single(
+                model,
+                processor,
+                dl,
+                device,
+                max_tokens=max_tokens,
+                format=format,
+            )
+        return results
+    else:
+        return _evaluate_single(
+            model,
+            processor,
+            dataloaders,
+            device,
+            max_tokens=max_tokens,
+            format=format,
+        )
 
 # import torch
 # from tqdm.auto import tqdm
