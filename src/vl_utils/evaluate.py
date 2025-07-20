@@ -1,6 +1,10 @@
 import torch
 from tqdm.auto import tqdm
 from typing import Literal
+
+from qwen_vl_utils import process_vision_info
+from transformers import GenerationConfig
+
 from .spatial import parse_point, point_in_bbox, dist_to_center
 
 @torch.no_grad()
@@ -9,12 +13,9 @@ def evaluate(
     processor,
     dataloader,
     device,
-    max_tokens: int = 20,
+    max_tokens: int = 25,
     format: Literal["plain", "json", "xml"] = "xml"
 ):
-    from qwen_vl_utils import process_vision_info
-    from transformers import GenerationConfig
-
     model.eval()
 
     hits, total, dists = 0, 0, []
@@ -37,6 +38,9 @@ def evaluate(
             clean_up_tokenization_spaces=False,
         )
         point = parse_point(pred_txt, format=format)
+        print("predicted text:", pred_txt)
+        print("predicted point:", point)
+        print("gt_box:", gt_box)
         if point:
             if point_in_bbox(point, gt_box):
                 hits += 1

@@ -11,7 +11,10 @@ import torch.nn as nn
 #   Modal image: system packages + Python deps                              #
 # ------------------------------------------------------------------------- #
 from images import qwen_image as image
-from vl_utils.data import load_data, create_dataloader
+# from vl_utils.data import load_data, create_dataloader
+
+from vl_utils.data_old import load_data, collate
+from functools import partial
 from vl_utils.evaluate import evaluate
 
 app = modal.App("finetune-qwen25-vl")
@@ -60,7 +63,9 @@ def train(run_name: str):
     device = torch.device("cuda")
     warmup_steps = 100
     total_steps = 5_000
-    dataset = "seeclick-5"
+    train_dataset = "webclick"
+    # train_dataset = "seeclick-5"
+    # test_dataset = "webclick"
     test_size = 100
     seed = 42
 
@@ -69,14 +74,33 @@ def train(run_name: str):
         model_id, trust_remote_code=True
     )  # , min_pixels=min_pixels, max_pixels=max_pixels)
     processor.tokenizer.padding_side = "right"
-    train, test = load_data(dataset, test_size, seed)
 
-    train_dl = create_dataloader(
-        train, processor, batch_size=per_gpu_bs, num_workers=4, eval=False
+    # test on the same bit of webclick every time
+    train, test = load_data(train_dataset, 100, seed)
+    train_dl = DataLoader(
+        train,  # type: ignore
+        batch_size=per_gpu_bs,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=partial(collate, processor=processor)
     )
-    test_dl = create_dataloader(
-        test, processor, batch_size=1, num_workers=4, eval=True
+    test_dl = DataLoader(
+        test,  # type: ignore
+        batch_size=1,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=partial(collate, processor=processor, eval=True)
     )
+    # _, test = load_data(test_dataset, 100, seed)
+
+    # train_dl = create_dataloader(
+    #     train, processor, batch_size=per_gpu_bs, num_workers=4, eval=False
+    # )
+    # test_dl = create_dataloader(
+    #     test, processor, batch_size=1, num_workers=4, eval=True
+    # )
 
     # ---------------------------- model -----------------------------------
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -92,8 +116,7 @@ def train(run_name: str):
     print(torch.cuda.memory_allocated() / 1e9)
 
     # save some memory
-    _freeze_layers(model, "visual.patch_embed")
-    _freeze_layers(model, "visual.blocks")
+    _freeze_layers(model, ["visual.patch_embed", "visual.blocks"])
 
     backbone = model.model  # same params, no LM head
     lm_weight = model.lm_head.weight  # shared weight matrix (V, H)

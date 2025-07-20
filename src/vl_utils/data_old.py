@@ -1,10 +1,8 @@
 import base64
 import io
-import json
+from os import setreuid
 import random
 import torch
-import itertools
-import bisect
 
 from PIL import Image, ImageFile
 from qwen_vl_utils import smart_resize, process_vision_info
@@ -26,58 +24,11 @@ class DatasetConfig:
 DATASETS = {
     "webclick": DatasetConfig("Hcompany/WebClick", "test", "relative"),
     "groundui-1k": DatasetConfig("agent-studio/GroundUI-1K", "train", "absolute"),
-    "seeclick-5": DatasetConfig("andersonbcdefg/seeclick-10k-hq-annotated", "train", "relative"),
-    "seeclick-3-4": DatasetConfig("andersonbcdefg/seeclick-10k-mid-q-annotated", "train", "relative"),
-    "seeclick-1-2": DatasetConfig("andersonbcdefg/seeclick-10k-low-q-annotated", "train", "relative"),
-    "seeclick-0": DatasetConfig("andersonbcdefg/seeclick-10k-low-q-annotated", "train", "relative"),
 }
-
-
-class ImageAnnotationDataset(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        images: list[str], # pre-converted to data uri
-        instructions: list[list[str]],
-        bboxes: list[list[tuple[float, float, float, float]]]
-    ):
-        self.images = images
-        self.instructions = instructions
-        self.bboxes = bboxes
-
-        self.lengths = [len(instruction_lst) for instruction_lst in instructions]
-        self.cum_lengths = list(itertools.accumulate(self.lengths))  # e.g. [3, 7, 10, …]
-
-    def __len__(self) -> int:
-        return self.cum_lengths[-1]
-
-    def __getitem__(self, idx: int):
-        if idx < 0:                     # handle negative indices
-            idx += len(self)
-        if idx < 0 or idx >= len(self):
-            raise IndexError(idx)
-
-        # Which image does this flattened idx belong to?
-        img_idx = bisect.bisect_right(self.cum_lengths, idx)
-        # Offset within that image’s annotation list
-        ann_offset = idx - (self.cum_lengths[img_idx - 1] if img_idx else 0)
-
-        return {
-            "image": self.images[img_idx],
-            "instruction": self.instructions[img_idx][ann_offset],
-            "bbox": self.bboxes[img_idx][ann_offset],
-        }
-
-
-
 
 def _load_one(dataset_name: str, cached=True):
     cfg = DATASETS[dataset_name]
-    ds: Dataset = load_dataset(cfg.repo_id, split=cfg.split) # type: ignore
-    if "elements" in ds.column_names:
-        ds = ds.map(lambda x: {"elements": json.loads(x['elements'])[0]})
-        ds = ds.map(explode_elements, batched=True, remove_columns=["elements"]).select_columns(["image", "instruction", "bbox"])
-
-    ds = ds.map(
+    ds = load_dataset(cfg.repo_id, split=cfg.split).map(
         partial(convert_to_messages, bbox_type=cfg.bbox_type, format="xml"),
         batched=True,
         batch_size=32,
@@ -88,18 +39,15 @@ def _load_one(dataset_name: str, cached=True):
     return ds
 
 def load_data(
-    datasets: str | list[str] = "webclick",
+    dataset: Literal["webclick", "groundui-1k", "both"] = "webclick",
     test_size: int = 100,
     seed: int = 42,
     cached: bool = True
 ):
-    if isinstance(datasets, str):
-        dataset_names = [datasets]
+    if dataset == "both":
+        dataset_names = ["webclick", "groundui-1k"]
     else:
-        dataset_names = datasets
-
-    for dsn in dataset_names:
-        assert dsn in DATASETS, f"dataset {dsn} not found"
+        dataset_names = [dataset]
 
     loaded = [
         _load_one(ds_name, cached=cached) for ds_name in dataset_names
@@ -130,27 +78,28 @@ def _to_data_uri(img: Image.Image, fmt="JPEG"):
 
         img = img.copy().convert("RGB")
         w, h = img.size
-        new_w, new_h = smart_resize(w, h, max_pixels=MAX_PIXELS)
+        new_h, new_w = smart_resize(h, w, max_pixels=MAX_PIXELS)
         img = img.resize((new_w, new_h), Image.Resampling.BICUBIC)  # ← bicubic
 
         buf = io.BytesIO()
         img.save(buf, format=fmt, optimize=True)
         data = base64.b64encode(buf.getvalue()).decode()
-        return f"data:image/{fmt.lower()};base64,{data}", new_w, new_h
+        return f"data:image/{fmt.lower()};base64,{data}"
 
     except Exception as e:
         print("⚠️  to_data_uri failed:", repr(e))
-        raise e
+        return None
 
 
-def prepare_batch(batch: dict, bbox_type="relative", format: Literal["plain", "xml", "json"] = "plain"):
+def convert_to_messages(batch: dict, bbox_type="relative", format: Literal["plain", "xml", "json"] = "plain"):
     out, bboxes = [], []
 
     for img, inst, (x1, y1, x2, y2) in zip(
         batch["image"], batch["instruction"], batch["bbox"]
     ):
         width, height = img.size
-        data_uri, new_w, new_h = _to_data_uri(img)
+        new_h, new_w = smart_resize(height, width, max_pixels=MAX_PIXELS)
+        data_uri = _to_data_uri(img)
         if data_uri is None:
             continue
         if bbox_type == "relative":

@@ -79,7 +79,8 @@ def _prepare_image(key, img_bytes, max_pixels: int = MAX_PIXELS):
     with PILImage.open(io.BytesIO(img_bytes)) as im:
         im = im.convert("RGB")
         orig_w, orig_h = im.size
-        new_w, new_h = smart_resize(orig_w, orig_h, max_pixels=max_pixels)
+        # unlike  PIL, smart_resize expects h, w for some reason
+        new_h, new_w  = smart_resize(orig_h, orig_w, max_pixels=max_pixels)
         im = im.resize((new_w, new_h), PILImage.Resampling.BICUBIC)
 
         buf = io.BytesIO()
@@ -167,7 +168,8 @@ def collate_fn(
                         "type": "text",
                         "text": (
                             f"Determine where to click in the UI to complete the instruction/task. {fmt_prompt} "
-                            f"Image size [{w}, {h}]."
+                            + f"Image size [{w}, {h}],"
+                            + f" (0, 0) is the top-left and ({w}, {h}) is the bottom-right."
                         ),
                     }
                 ],
@@ -289,12 +291,6 @@ def create_dataloader(
     Create DataLoader with the new efficient collate function.
     Uses persistent_workers to preserve LRU cache across batches.
     """
-    # Get the underlying UIAnnotationDataset
-    if isinstance(dataset, torch.utils.data.Subset):
-        base_dataset = dataset.dataset
-    else:
-        base_dataset = dataset
-
     # Create collate function with proper closure
     def collate_wrapper(batch):
         return collate_fn(
