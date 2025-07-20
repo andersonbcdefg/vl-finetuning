@@ -43,14 +43,14 @@ def build_split_datasets(name: str, split: str = "train"):
     path2idx, img_rows, ann_rows = {}, [], []
     for row in raw:
         # identify the image
-        path = row["image"]["path"]
+        path = row["image"]["path"] # type: ignore
         idx  = path2idx.setdefault(path, len(path2idx))
         if idx == len(img_rows):                          # first time we see it
-            img_rows.append({"id": idx, "image": row["image"]})
+            img_rows.append({"id": idx, "image": row["image"]}) # type: ignore
 
         # explode annotations -----------------------------------------
-        if "elements" in row and row["elements"]:
-            elems = row["elements"]
+        if "elements" in row and row["elements"]: # type: ignore
+            elems = row["elements"] # type: ignore
             if isinstance(elems, str):      # some datasets store JSON text
                 elems = json.loads(elems)
             if elems and isinstance(elems[0], list):  # sometimes nested because i'm stupid
@@ -65,8 +65,8 @@ def build_split_datasets(name: str, split: str = "train"):
         else:  # simple one‑annotation‑per‑row case
             ann_rows.append({
                 "img_idx": idx,
-                "instruction": row["instruction"],
-                "bbox": row["bbox"],
+                "instruction": row["instruction"], # type: ignore
+                "bbox": row["bbox"], # type: ignore
             })
 
     images_ds = Dataset.from_list(img_rows)

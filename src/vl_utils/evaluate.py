@@ -3,7 +3,7 @@ from tqdm.auto import tqdm
 from typing import Literal
 
 from qwen_vl_utils import process_vision_info
-from transformers import GenerationConfig
+from transformers import GenerationConfig # type: ignore
 
 from .spatial import parse_point, point_in_bbox, dist_to_center
 

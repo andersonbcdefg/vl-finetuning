@@ -11,26 +11,18 @@ import torch.nn as nn
 #   Modal image: system packages + Python deps                              #
 # ------------------------------------------------------------------------- #
 from images import qwen_image as image
-# from vl_utils.data import load_data, create_dataloader
+from vl_utils.data import load_data, create_dataloader
 
-from vl_utils.data_old import load_data, collate
+# from vl_utils.data_old import load_data, collate
 from functools import partial
 from vl_utils.evaluate import evaluate
+from vl_utils import freeze_layers
 
 app = modal.App("finetune-qwen25-vl")
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
 metrics_vol = modal.Volume.from_name("vl-ft-metrics", create_if_missing=True)
 
 MINUTES = 60
-
-
-def _freeze_layers(model: nn.Module, target: str | list[str]):
-    if isinstance(target, str):
-        target = [target]
-    for n, p in model.named_parameters():
-        if any(t in n for t in target):
-            p.requires_grad = False
-
 
 @app.function(
     image=image,
@@ -43,7 +35,7 @@ def train(run_name: str):
     import bitsandbytes as bnb
     import torch
     from cut_cross_entropy import linear_cross_entropy  # type: ignore
-    from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
+    from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl # type: ignore
     from torch.nn.utils import clip_grad_norm_
     from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
@@ -77,30 +69,30 @@ def train(run_name: str):
 
     # test on the same bit of webclick every time
     train, test = load_data(train_dataset, 100, seed)
-    train_dl = DataLoader(
-        train,  # type: ignore
-        batch_size=per_gpu_bs,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=partial(collate, processor=processor)
-    )
-    test_dl = DataLoader(
-        test,  # type: ignore
-        batch_size=1,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=partial(collate, processor=processor, eval=True)
-    )
+    # train_dl = DataLoader(
+    #     train,  # type: ignore
+    #     batch_size=per_gpu_bs,
+    #     shuffle=True,
+    #     num_workers=4,
+    #     pin_memory=True,
+    #     collate_fn=partial(collate, processor=processor)
+    # )
+    # test_dl = DataLoader(
+    #     test,  # type: ignore
+    #     batch_size=1,
+    #     shuffle=False,
+    #     num_workers=4,
+    #     pin_memory=True,
+    #     collate_fn=partial(collate, processor=processor, eval=True)
+    # )
     # _, test = load_data(test_dataset, 100, seed)
 
-    # train_dl = create_dataloader(
-    #     train, processor, batch_size=per_gpu_bs, num_workers=4, eval=False
-    # )
-    # test_dl = create_dataloader(
-    #     test, processor, batch_size=1, num_workers=4, eval=True
-    # )
+    train_dl = create_dataloader(
+        train, processor, batch_size=per_gpu_bs, num_workers=4, eval=False
+    )
+    test_dl = create_dataloader(
+        test, processor, batch_size=1, num_workers=4, eval=True
+    )
 
     # ---------------------------- model -----------------------------------
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
