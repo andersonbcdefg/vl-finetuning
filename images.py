@@ -93,11 +93,12 @@ qwen_image = (
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
     )
     .pip_install("bitsandbytes", "liger-kernel")
-    .pip_install_private_repos(
-        "github.com/andersonbcdefg/vl-finetuning.git@e702e97",
-        git_user="andersonbcdefg",
-        secrets=[modal.Secret.from_name("my-github-secret")],
-    )
+    # .pip_install_private_repos(
+    #     "github.com/andersonbcdefg/vl-finetuning.git@f5c39fb",
+    #     git_user="andersonbcdefg",
+    #     secrets=[modal.Secret.from_name("my-github-secret")],
+    # )
     .entrypoint([])
     .add_local_python_source("images")
+    .add_local_python_source("vl_utils")
 )
