@@ -3,19 +3,20 @@ from tqdm.auto import tqdm
 from typing import Literal
 
 from qwen_vl_utils import process_vision_info
-from transformers import GenerationConfig # type: ignore
+from transformers import GenerationConfig  # type: ignore
 
 from .spatial import parse_point, point_in_bbox, dist_to_center
 
 @torch.no_grad()
-def evaluate(
+def _evaluate_single(
     model,
     processor,
     dataloader,
     device,
     max_tokens: int = 25,
-    format: Literal["plain", "json", "xml"] = "xml"
+    format: Literal["plain", "json", "xml"] = "xml",
 ):
+    """Evaluate on a single dataloader and return metrics."""
     model.eval()
 
     hits, total, dists = 0, 0, []
@@ -25,12 +26,12 @@ def evaluate(
         gt_box = batch.pop("bbox")[0]
         generation_config = GenerationConfig(
             do_sample=False,
-            max_new_tokens=max_tokens
+            max_new_tokens=max_tokens,
         )
-        generation_config.temperature = None          # remove the attribute
+        generation_config.temperature = None  # remove the attribute
         out_ids = model.generate(
             **batch.to(device),
-            generation_config=generation_config
+            generation_config=generation_config,
         )
         pred_txt = processor.tokenizer.decode(
             out_ids[0][batch["input_ids"].shape[1] :],
@@ -51,3 +52,42 @@ def evaluate(
     mean_dist = sum(dists) / len(dists) if dists else float("nan")
 
     return {"accuracy": acc, "mean_center_dist": mean_dist}
+
+
+@torch.no_grad()
+def evaluate(
+    model,
+    processor,
+    dataloaders,
+    device,
+    max_tokens: int = 25,
+    format: Literal["plain", "json", "xml"] = "xml",
+):
+    """Evaluate the model on one or more dataloaders.
+
+    ``dataloaders`` may be either a single DataLoader or a mapping of name ->
+    DataLoader. When a mapping is provided a mapping of metrics will be
+    returned for each dataset name.
+    """
+
+    if isinstance(dataloaders, dict):
+        results = {}
+        for name, dl in dataloaders.items():
+            results[name] = _evaluate_single(
+                model,
+                processor,
+                dl,
+                device,
+                max_tokens=max_tokens,
+                format=format,
+            )
+        return results
+    else:
+        return _evaluate_single(
+            model,
+            processor,
+            dataloaders,
+            device,
+            max_tokens=max_tokens,
+            format=format,
+        )

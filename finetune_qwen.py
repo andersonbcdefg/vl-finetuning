@@ -58,6 +58,7 @@ def train(run_name: str):
     train_dataset = "webclick"
     # train_dataset = "seeclick-5"
     # test_dataset = "webclick"
+    eval_datasets = ["webclick"]
     test_size = 100
     seed = 42
 
@@ -67,8 +68,16 @@ def train(run_name: str):
     )  # , min_pixels=min_pixels, max_pixels=max_pixels)
     processor.tokenizer.padding_side = "right"
 
-    # test on the same bit of webclick every time
-    train, test = load_data(train_dataset, 100, seed)
+    # Load training dataset and evaluation datasets separately
+    train, _ = load_data(train_dataset, test_size, seed)
+
+    eval_dataloaders = {}
+    for name in eval_datasets:
+        _, ds = load_data(name, test_size, seed)
+        if ds is not None:
+            eval_dataloaders[name] = create_dataloader(
+                ds, processor, batch_size=1, num_workers=4, eval=True
+            )
     # train_dl = DataLoader(
     #     train,  # type: ignore
     #     batch_size=per_gpu_bs,
@@ -89,9 +98,6 @@ def train(run_name: str):
 
     train_dl = create_dataloader(
         train, processor, batch_size=per_gpu_bs, num_workers=4, eval=False
-    )
-    test_dl = create_dataloader(
-        test, processor, batch_size=1, num_workers=4, eval=True
     )
 
     # ---------------------------- model -----------------------------------
@@ -132,18 +138,20 @@ def train(run_name: str):
     eval_metrics = []
 
     # do initial eval
-    results = evaluate(model, processor, test_dl, device)
-    print(
-        f"📊 accuracy: {results['accuracy']:.3%} | "
-        f"avg centre-distance: {results['mean_center_dist']:.4f}"
-    )
-    eval_metrics.append(
-        {
-            "step": steps_so_far,
-            "accuracy": results["accuracy"],
-            "mean_center_dist": results["mean_center_dist"],
-        }
-    )
+    results = evaluate(model, processor, eval_dataloaders, device)
+    for name, metrics in results.items():
+        print(
+            f"[{name}] 📊 accuracy: {metrics['accuracy']:.3%} | "
+            f"avg centre-distance: {metrics['mean_center_dist']:.4f}"
+        )
+        eval_metrics.append(
+            {
+                "dataset": name,
+                "step": steps_so_far,
+                "accuracy": metrics["accuracy"],
+                "mean_center_dist": metrics["mean_center_dist"],
+            }
+        )
 
     # --------------------------- training ---------------------------------
     last_step = time.time()
@@ -202,23 +210,24 @@ def train(run_name: str):
                 model.save_pretrained(save_path, safe_serialization=True)
                 processor.save_pretrained(save_path)
                 print(f"✅ saved {save_path}")
-
-                # ------------- evaluate ----------------------------------------
-                results = evaluate(model, processor, test_dl, device)
-                print(
-                    f"📊 accuracy: {results['accuracy']:.3%} | "
-                    f"avg centre-distance: {results['mean_center_dist']:.4f}"
-                )
-                eval_metrics.append(
-                    {
-                        "step": steps_so_far,
-                        "accuracy": results["accuracy"],
-                        "mean_center_dist": results["mean_center_dist"],
-                    }
-                )
+                
+                # ------------- evaluate ---------------------------------------
+                results = evaluate(model, processor, eval_dataloaders, device)
+                for name, metrics in results.items():
+                    print(
+                        f"[{name}] 📊 accuracy: {metrics['accuracy']:.3%} | "
+                        f"avg centre-distance: {metrics['mean_center_dist']:.4f}"
+                    )
+                    eval_metrics.append({
+                        'dataset': name,
+                        'step': steps_so_far,
+                        'accuracy': metrics['accuracy'],
+                        'mean_center_dist': metrics['mean_center_dist'],
+                    })
                 last_step = (
                     time.time()
                 )  # shouldn't be abnormally long step time after eval
+
 
             if steps_so_far >= total_steps:
                 break
@@ -228,20 +237,24 @@ def train(run_name: str):
     model.save_pretrained(save_path, safe_serialization=True)
     processor.save_pretrained(save_path)
     print(f"✅ saved {save_path}")
+    
+    # ------------- evaluate ---------------------------------------
+    results = evaluate(model, processor, eval_dataloaders, device)
+    for name, metrics in results.items():
+        print(
+            f"[{name}] 📊 accuracy: {metrics['accuracy']:.3%} | "
+            f"avg centre-distance: {metrics['mean_center_dist']:.4f}"
+        )
+        eval_metrics.append({
+            'dataset': name,
+            'step': steps_so_far,
+            'accuracy': metrics['accuracy'],
+            'mean_center_dist': metrics['mean_center_dist'],
+        })
+    last_step = (
+        time.time()
+    )  # shouldn't be abnormally long step time after eval
 
-    # ------------- evaluate ----------------------------------------
-    results = evaluate(model, processor, test_dl, device)
-    print(
-        f"📊 accuracy: {results['accuracy']:.3%} | "
-        f"avg centre-distance: {results['mean_center_dist']:.4f}"
-    )
-    eval_metrics.append(
-        {
-            "step": steps_so_far,
-            "accuracy": results["accuracy"],
-            "mean_center_dist": results["mean_center_dist"],
-        }
-    )
 
     print("saving metrics...")
     out_dir = f"/metrics/{run_name}"
