@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import os
 import random
 import torch
 from torch.utils.data import ConcatDataset, Subset
@@ -30,6 +31,13 @@ DATASETS = {
     "seeclick-3-annots": {"repo_id": "andersonbcdefg/seeclick-8-12-yolo-annots", "split": "train", "bbox_type": "relative"},
     "seeclick-4-annots": {"repo_id": "andersonbcdefg/seeclick-13-plus-yolo-annots", "split": "train", "bbox_type": "relative"},
     "screenspot": {"repo_id": "rootsautomation/ScreenSpot", "split": "test", "bbox_type": "relative"},
+    "seeclick-relabeled": {
+        "images_repo": "KingdomFor/seeclick_web",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/seeclick-filtered-relabeled",
+        "ann_split": "train",
+        "bbox_type": "relative",
+    },
 }
 
 def _prepare_image(img_bytes, max_pixels: int = MAX_PIXELS):
@@ -138,6 +146,74 @@ def build_split_datasets(
 
     images_ds = Dataset.from_list(img_rows)
     ann_ds    = Dataset.from_list(ann_rows)
+    return images_ds, ann_ds
+
+def build_split_datasets_two_sources(
+    image_repo: str,
+    image_split: str,
+    ann_repo: str,
+    ann_split: str,
+    bbox_type: Literal["relative", "absolute"],
+):
+    """Join images from one dataset with annotations from another."""
+    images_raw = (
+        load_dataset(image_repo, split=image_split)
+        .cast_column("image", Image(decode=False))
+    )
+    ann_raw = load_dataset(ann_repo, split=ann_split)
+
+    path_map: dict[str, dict] = {}
+    img_rows, ann_rows = [], []
+
+    for row in images_raw:
+        path = row["image"]["path"]  # type: ignore
+        data_uri, orig_size, new_size = _prepare_image(row["image"]["bytes"])  # type: ignore
+        idx = len(img_rows)
+        img_rows.append({"id": idx, "uri": data_uri})
+        info = {"idx": idx, "orig": orig_size, "new": new_size}
+        path_map[path] = info
+        path_map[os.path.basename(path)] = info
+
+    for row in ann_raw:
+        row = cast(dict, row)
+        fname = row.get("file_name") or row.get("filename") or row.get("path")
+        if not fname:
+            continue
+        info = path_map.get(fname) or path_map.get(os.path.basename(str(fname)))
+        if info is None:
+            continue
+        orig_size, new_size = info["orig"], info["new"]
+        idx = info["idx"]
+
+        if "elements" in row and row["elements"]:
+            elems = row["elements"]
+            if isinstance(elems, str):
+                elems = json.loads(elems)
+            if elems and isinstance(elems[0], list):
+                elems = elems[0]
+            for el in elems:
+                scaled = _scale_bbox(el["bbox"], bbox_type, orig_size, new_size)
+                ann_rows.append({
+                    "img_idx": idx,
+                    "instruction": el["instruction"],
+                    "bbox": scaled,
+                    "center": _bbox_center(scaled),
+                    "size": new_size,
+                })
+        else:
+            if "bbox" not in row or "instruction" not in row:
+                continue
+            scaled = _scale_bbox(row["bbox"], bbox_type, orig_size, new_size)
+            ann_rows.append({
+                "img_idx": idx,
+                "instruction": row["instruction"],
+                "bbox": scaled,
+                "center": _bbox_center(scaled),
+                "size": new_size,
+            })
+
+    images_ds = Dataset.from_list(img_rows)
+    ann_ds = Dataset.from_list(ann_rows)
     return images_ds, ann_ds
 
 class UIAnnotationDataset(torch.utils.data.Dataset):
@@ -293,7 +369,16 @@ def load_data(
     loaded = []
     for dsn in dataset_names:
         cfg = DATASETS[dsn]
-        img_ds, ann_ds = build_split_datasets(cfg["repo_id"], cfg["split"],  cfg["bbox_type"]) # type: ignore
+        if "repo_id" in cfg:
+            img_ds, ann_ds = build_split_datasets(cfg["repo_id"], cfg["split"], cfg["bbox_type"])  # type: ignore
+        else:
+            img_ds, ann_ds = build_split_datasets_two_sources(
+                cfg["images_repo"],
+                cfg.get("images_split", "train"),
+                cfg["ann_repo"],
+                cfg.get("ann_split", "train"),
+                cfg["bbox_type"],
+            )
         ds = UIAnnotationDataset(img_ds, ann_ds)
         loaded.append(ds)
 
