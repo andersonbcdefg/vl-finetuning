@@ -1,5 +1,6 @@
 import json
 import time
+import os
 from pathlib import Path
 import modal
 
@@ -20,7 +21,7 @@ metrics_vol = modal.Volume.from_name("vl-ft-metrics", create_if_missing=True)
 
 MINUTES = 60
 
-def _print_metrics(results: dict):
+def _print_metrics(results: dict, eval_metrics: list, steps_so_far: int):
   for name, metrics in results.items():
         print(
             f"[{name}] 📊 accuracy: {metrics['accuracy']:.3%} | "
@@ -42,7 +43,11 @@ def _print_metrics(results: dict):
     volumes={"/root/.cache/huggingface": hf_cache_vol, "/metrics": metrics_vol},
     timeout=240 * MINUTES,
 )
-def train(run_name: str):
+def train(
+    run_name: str,
+    train_dataset: str,
+    eval_dataset: str = "webclick,screenspot,groundui-1k"
+):
     import bitsandbytes as bnb
     import torch
     from cut_cross_entropy import linear_cross_entropy  # type: ignore
@@ -66,10 +71,9 @@ def train(run_name: str):
     device = torch.device("cuda")
     warmup_steps = 100
     total_steps = 2_000
-    train_dataset = "seeclick-5"
-    eval_datasets = ["webclick", "screenspot"]
+    train_datasets = train_dataset.split(",") # type: ignore
+    eval_datasets = eval_dataset.split(",")
     test_size = 125
-    test_dataset = "screenspot"
     eval_every = 400
     test_size = 250
     seed = 42
@@ -85,14 +89,14 @@ def train(run_name: str):
 
     # Load training dataset and evaluation datasets separately
     eval_dataloaders = {}
-    train, test_split = load_data(train_dataset, test_size, seed)
-    
+    train, test_split = load_data(train_datasets, test_size, seed)
+
     # always include test split of the train data in the loader
     eval_dataloaders["held_out_train"] = create_dataloader(
       test_split, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
     )
 
-    
+
     for name in eval_datasets:
         _, ds = load_data(name, test_size, seed)
         if ds is not None:
@@ -144,7 +148,7 @@ def train(run_name: str):
 
     # initial eval
     results = evaluate(model, eval_processor, eval_dataloaders, device)
-    _print_metrics(results)
+    _print_metrics(results, eval_metrics, steps_so_far)
 
 
     # --------------------------- training ---------------------------------
@@ -205,11 +209,11 @@ def train(run_name: str):
                 # processor.save_pretrained(save_path)
                 print(f"✅ saved {save_path}")
 
-                
+
                 # ------------- evaluate ---------------------------------------
                 results = evaluate(model, eval_processor, eval_dataloaders, device)
-                _print_metrics(results)
-                
+                _print_metrics(results, eval_metrics, steps_so_far)
+
                 last_step = (
                     time.time()
                 )  # shouldn't be abnormally long step time after eval
@@ -222,10 +226,10 @@ def train(run_name: str):
     save_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(save_path, safe_serialization=True)
     print(f"✅ saved {save_path}")
-    
+
     # ------------- evaluate ---------------------------------------
-    results = evaluate(model, processor, eval_dataloaders, device)
-    _print_metrics(results)
+    results = evaluate(model, eval_processor, eval_dataloaders, device)
+    _print_metrics(results, eval_metrics, steps_so_far)
 
     print("saving metrics...")
     out_dir = f"/metrics/{run_name}"

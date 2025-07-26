@@ -39,6 +39,7 @@ yolo_image = (
     )
     .entrypoint([])
     .add_local_file("model_v1_5.pt", "/yolo_model.pt")
+    .add_local_python_source("images")
 )
 
 classifier_image = (
@@ -66,6 +67,7 @@ classifier_image = (
         "bitsandbytes",
     )
     .entrypoint([])
+    .add_local_python_source("images")
 )
 
 qwen_image = (

@@ -5,7 +5,7 @@ import random
 import torch
 from torch.utils.data import ConcatDataset, Subset
 from functools import lru_cache
-from typing import Literal, Any
+from typing import Literal, Any, cast
 
 from PIL import Image as PILImage, ImageFile
 from qwen_vl_utils import smart_resize, process_vision_info
@@ -24,11 +24,13 @@ DATASETS = {
     "seeclick-3-4": {"repo_id": "andersonbcdefg/seeclick-10k-mid-q-annotated", "split": "train", "bbox_type": "relative"},
     "seeclick-1-2": {"repo_id": "andersonbcdefg/seeclick-10k-low-q-annotated", "split": "train", "bbox_type": "relative"},
     "seeclick-0": {"repo_id": "andersonbcdefg/seeclick-10k-awful-q-annotated", "split": "train", "bbox_type": "relative"},
+    "seeclick-0-annots": {"repo_id": "andersonbcdefg/seeclick-0-1-yolo-annots", "split": "train", "bbox_type": "relative"},
+    "seeclick-1-annots": {"repo_id": "andersonbcdefg/seeclick-2-3-yolo-annots", "split": "train", "bbox_type": "relative"},
+    "seeclick-2-annots": {"repo_id": "andersonbcdefg/seeclick-4-7-yolo-annots", "split": "train", "bbox_type": "relative"},
+    "seeclick-3-annots": {"repo_id": "andersonbcdefg/seeclick-8-12-yolo-annots", "split": "train", "bbox_type": "relative"},
+    "seeclick-4-annots": {"repo_id": "andersonbcdefg/seeclick-13-plus-yolo-annots", "split": "train", "bbox_type": "relative"},
     "screenspot": {"repo_id": "rootsautomation/ScreenSpot", "split": "test", "bbox_type": "relative"},
 }
-
-# LRU cache size - tune for memory vs speed tradeoff
-MAX_CACHE = 16_384
 
 def _prepare_image(img_bytes, max_pixels: int = MAX_PIXELS):
     """Decode once, resize, stash as data‑URI."""
@@ -91,8 +93,25 @@ def build_split_datasets(
             img_rows.append({"id": idx, "uri": data_uri}) # type: ignore
 
         # explode annotations -----------------------------------------
+        row = cast(dict, row)
         if "elements" in row and row["elements"]: # type: ignore
             elems = row["elements"] # type: ignore
+            if isinstance(elems, str):      # some datasets store JSON text
+                elems = json.loads(elems)
+            if elems and isinstance(elems[0], list):  # sometimes nested because i'm stupid
+                elems = elems[0]
+
+            for el in elems:
+                scaled = _scale_bbox(el["bbox"], bbox_type, orig_size, new_size)
+                ann_rows.append({
+                    "img_idx": idx,
+                    "instruction": el["instruction"],
+                    "bbox": scaled,
+                    "center": _bbox_center(scaled), # type: ignore
+                    "size": new_size
+                })
+        elif "seeclick_elements" in row and row['seeclick_elements']:
+            elems = row['seeclick_elements']
             if isinstance(elems, str):      # some datasets store JSON text
                 elems = json.loads(elems)
             if elems and isinstance(elems[0], list):  # sometimes nested because i'm stupid
