@@ -31,8 +31,15 @@ DATASETS = {
     "seeclick-3-annots": {"repo_id": "andersonbcdefg/seeclick-8-12-yolo-annots", "split": "train", "bbox_type": "relative"},
     "seeclick-4-annots": {"repo_id": "andersonbcdefg/seeclick-13-plus-yolo-annots", "split": "train", "bbox_type": "relative"},
     "screenspot": {"repo_id": "rootsautomation/ScreenSpot", "split": "test", "bbox_type": "relative"},
+    "seeclick-filtered": {
+        "images_repo": "andersonbcdefg/seeclick-10k-scored",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/seeclick-filtered-orig-labels",
+        "ann_split": "train",
+        "bbox_type": "relative",
+    },
     "seeclick-relabeled": {
-        "images_repo": "KingdomFor/seeclick_web",
+        "images_repo": "andersonbcdefg/seeclick-10k-scored",
         "images_split": "train",
         "ann_repo": "andersonbcdefg/seeclick-filtered-relabeled",
         "ann_split": "train",
@@ -160,7 +167,7 @@ def build_split_datasets_two_sources(
         load_dataset(image_repo, split=image_split)
         .cast_column("image", Image(decode=False))
     )
-    ann_raw = load_dataset(ann_repo, split=ann_split)
+    ann_raw = load_dataset(ann_repo, split=ann_split, download_mode='force_redownload')
 
     path_map: dict[str, dict] = {}
     img_rows, ann_rows = [], []
