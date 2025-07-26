@@ -30,6 +30,13 @@ DATASETS = {
     "seeclick-3-annots": {"repo_id": "andersonbcdefg/seeclick-8-12-yolo-annots", "split": "train", "bbox_type": "relative"},
     "seeclick-4-annots": {"repo_id": "andersonbcdefg/seeclick-13-plus-yolo-annots", "split": "train", "bbox_type": "relative"},
     "screenspot": {"repo_id": "rootsautomation/ScreenSpot", "split": "test", "bbox_type": "relative"},
+    # Images and annotations from separate datasets
+    "seeclick-web-relabeled": {
+        "images_repo_id": "KingdomFor/seeclick_web",
+        "annotations_repo_id": "andersonbcdefg/seeclick-filtered-relabeled",
+        "split": "train",
+        "bbox_type": "relative",
+    },
 }
 
 def _prepare_image(img_bytes, max_pixels: int = MAX_PIXELS):
@@ -70,8 +77,8 @@ def _bbox_center(
 
     return cx, cy
 
-def build_split_datasets(
-    name: str,
+def _build_single_dataset(
+    repo_id: str,
     split: str,
     bbox_type: Literal["relative", "absolute"]
 ):
@@ -81,7 +88,7 @@ def build_split_datasets(
       ann_ds    : Dataset(img_idx, instr, bb) # one row per annotation
     The image column is *not decoded* here, so memory stays low.
     """
-    raw = load_dataset(name, split=split).cast_column("image", Image(decode=False))
+    raw = load_dataset(repo_id, split=split).cast_column("image", Image(decode=False))
 
     path2idx, img_rows, ann_rows = {}, [], []
     for row in raw:
@@ -139,6 +146,102 @@ def build_split_datasets(
     images_ds = Dataset.from_list(img_rows)
     ann_ds    = Dataset.from_list(ann_rows)
     return images_ds, ann_ds
+
+
+def _build_joined_dataset(
+    images_repo_id: str,
+    annotations_repo_id: str,
+    split: str,
+    bbox_type: Literal["relative", "absolute"],
+):
+    """Load images from one dataset and annotations from another."""
+    img_ds = load_dataset(images_repo_id, split=split).cast_column("image", Image(decode=False))
+    ann_ds_raw = load_dataset(annotations_repo_id, split=split)
+
+    path2meta: dict[str, dict] = {}
+    img_rows: list[dict] = []
+    for row in img_ds:
+        path = row["image"]["path"]  # type: ignore
+        orig_bytes = row["image"]["bytes"]  # type: ignore
+        data_uri, orig_size, new_size = _prepare_image(orig_bytes)
+        idx = len(path2meta)
+        path2meta[path] = {"idx": idx, "orig": orig_size, "new": new_size, "uri": data_uri}
+        img_rows.append({"id": idx, "uri": data_uri})
+
+    file_col = None
+    for col in ("file_name", "filename", "path"):
+        if col in ann_ds_raw.column_names:
+            file_col = col
+            break
+    if file_col is None:
+        raise ValueError("Annotation dataset missing file path column")
+
+    ann_rows: list[dict] = []
+    for row in ann_ds_raw:
+        path = row[file_col]
+        meta = path2meta.get(path)
+        if meta is None:
+            continue
+        orig_size = meta["orig"]
+        new_size = meta["new"]
+        idx = meta["idx"]
+
+        row = cast(dict, row)
+        if "elements" in row and row["elements"]:
+            elems = row["elements"]
+            if isinstance(elems, str):
+                elems = json.loads(elems)
+            if elems and isinstance(elems[0], list):
+                elems = elems[0]
+            for el in elems:
+                scaled = _scale_bbox(el["bbox"], bbox_type, orig_size, new_size)
+                ann_rows.append({
+                    "img_idx": idx,
+                    "instruction": el["instruction"],
+                    "bbox": scaled,
+                    "center": _bbox_center(scaled),
+                    "size": new_size,
+                })
+        elif "seeclick_elements" in row and row["seeclick_elements"]:
+            elems = row["seeclick_elements"]
+            if isinstance(elems, str):
+                elems = json.loads(elems)
+            if elems and isinstance(elems[0], list):
+                elems = elems[0]
+            for el in elems:
+                scaled = _scale_bbox(el["bbox"], bbox_type, orig_size, new_size)
+                ann_rows.append({
+                    "img_idx": idx,
+                    "instruction": el["instruction"],
+                    "bbox": scaled,
+                    "center": _bbox_center(scaled),
+                    "size": new_size,
+                })
+        else:
+            scaled = _scale_bbox(row["bbox"], bbox_type, orig_size, new_size)  # type: ignore
+            ann_rows.append({
+                "img_idx": idx,
+                "instruction": row["instruction"],  # type: ignore
+                "bbox": scaled,
+                "center": _bbox_center(scaled),
+                "size": new_size,
+            })
+
+    images_ds = Dataset.from_list(img_rows)
+    ann_ds = Dataset.from_list(ann_rows)
+    return images_ds, ann_ds
+
+
+def build_split_datasets(
+    name_or_tuple: str | tuple[str, str],
+    split: str,
+    bbox_type: Literal["relative", "absolute"],
+):
+    """Dispatch to appropriate dataset builder."""
+    if isinstance(name_or_tuple, tuple):
+        return _build_joined_dataset(name_or_tuple[0], name_or_tuple[1], split, bbox_type)
+    else:
+        return _build_single_dataset(name_or_tuple, split, bbox_type)
 
 class UIAnnotationDataset(torch.utils.data.Dataset):
     """
@@ -293,7 +396,12 @@ def load_data(
     loaded = []
     for dsn in dataset_names:
         cfg = DATASETS[dsn]
-        img_ds, ann_ds = build_split_datasets(cfg["repo_id"], cfg["split"],  cfg["bbox_type"]) # type: ignore
+        if "repo_id" in cfg:
+            param = cfg["repo_id"]
+        else:
+            param = (cfg["images_repo_id"], cfg["annotations_repo_id"])
+
+        img_ds, ann_ds = build_split_datasets(param, cfg["split"], cfg["bbox_type"])  # type: ignore
         ds = UIAnnotationDataset(img_ds, ann_ds)
         loaded.append(ds)
 
