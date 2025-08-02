@@ -3,10 +3,13 @@ import io
 import json
 import os
 import random
+from datetime import datetime
 import torch
 from torch.utils.data import ConcatDataset, Subset
 from functools import lru_cache
 from typing import Literal, Any, cast
+from multiprocessing import Pool
+from functools import partial
 
 from PIL import Image as PILImage, ImageFile
 from qwen_vl_utils import smart_resize, process_vision_info
@@ -19,24 +22,49 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # Dataset configurations
 DATASETS = {
-    "webclick": {"repo_id": "Hcompany/WebClick", "split": "test", "bbox_type": "relative"},
-    "groundui-1k": {"repo_id": "agent-studio/GroundUI-1K", "split": "train", "bbox_type": "absolute"},
-    "seeclick-5": {"repo_id": "andersonbcdefg/seeclick-10k-hq-annotated", "split": "train", "bbox_type": "relative"},
-    "seeclick-3-4": {"repo_id": "andersonbcdefg/seeclick-10k-mid-q-annotated", "split": "train", "bbox_type": "relative"},
-    "seeclick-1-2": {"repo_id": "andersonbcdefg/seeclick-10k-low-q-annotated", "split": "train", "bbox_type": "relative"},
-    "seeclick-0": {"repo_id": "andersonbcdefg/seeclick-10k-awful-q-annotated", "split": "train", "bbox_type": "relative"},
-    "seeclick-0-annots": {"repo_id": "andersonbcdefg/seeclick-0-1-yolo-annots", "split": "train", "bbox_type": "relative"},
-    "seeclick-1-annots": {"repo_id": "andersonbcdefg/seeclick-2-3-yolo-annots", "split": "train", "bbox_type": "relative"},
-    "seeclick-2-annots": {"repo_id": "andersonbcdefg/seeclick-4-7-yolo-annots", "split": "train", "bbox_type": "relative"},
-    "seeclick-3-annots": {"repo_id": "andersonbcdefg/seeclick-8-12-yolo-annots", "split": "train", "bbox_type": "relative"},
-    "seeclick-4-annots": {"repo_id": "andersonbcdefg/seeclick-13-plus-yolo-annots", "split": "train", "bbox_type": "relative"},
-    "screenspot": {"repo_id": "rootsautomation/ScreenSpot", "split": "test", "bbox_type": "relative"},
+    "webclick": {"repo_id": "Hcompany/WebClick", "split": "test", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "groundui-1k": {"repo_id": "agent-studio/GroundUI-1K", "split": "train", "bbox_type": "absolute", "bbox_format": "xyxy"},
+    "seeclick-5": {"repo_id": "andersonbcdefg/seeclick-10k-hq-annotated", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "seeclick-3-4": {"repo_id": "andersonbcdefg/seeclick-10k-mid-q-annotated", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "seeclick-1-2": {"repo_id": "andersonbcdefg/seeclick-10k-low-q-annotated", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "seeclick-0": {"repo_id": "andersonbcdefg/seeclick-10k-awful-q-annotated", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "seeclick-0-annots": {"repo_id": "andersonbcdefg/seeclick-0-1-yolo-annots", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "seeclick-1-annots": {"repo_id": "andersonbcdefg/seeclick-2-3-yolo-annots", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "seeclick-2-annots": {"repo_id": "andersonbcdefg/seeclick-4-7-yolo-annots", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "seeclick-3-annots": {"repo_id": "andersonbcdefg/seeclick-8-12-yolo-annots", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "seeclick-4-annots": {"repo_id": "andersonbcdefg/seeclick-13-plus-yolo-annots", "split": "train", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "screenspot": {"repo_id": "rootsautomation/ScreenSpot", "split": "test", "bbox_type": "relative", "bbox_format": "xyxy"},
+    "screenspot-v2-web": {
+        "images_repo": "andersonbcdefg/screenspot-v2-images",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/screenspot-v2-annots-web",
+        "ann_split": "train",
+        "bbox_type": "absolute",
+        "bbox_format": "xywh",
+    },
+    "screenspot-v2-mobile": {
+        "images_repo": "andersonbcdefg/screenspot-v2-images",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/screenspot-v2-annots-mobile",
+        "ann_split": "train",
+        "bbox_type": "absolute",
+        "bbox_format": "xywh",
+    },
+    "screenspot-v2-desktop": {
+        "images_repo": "andersonbcdefg/screenspot-v2-images",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/screenspot-v2-annots-desktop",
+        "ann_split": "train",
+        "bbox_type": "absolute",
+        "bbox_format": "xywh",
+    },
     "seeclick-filtered": {
         "images_repo": "andersonbcdefg/seeclick-10k-scored",
         "images_split": "train",
         "ann_repo": "andersonbcdefg/seeclick-filtered-orig-labels",
         "ann_split": "train",
         "bbox_type": "relative",
+        "bbox_format": "xyxy",
     },
     "seeclick-relabeled": {
         "images_repo": "andersonbcdefg/seeclick-10k-scored",
@@ -44,7 +72,24 @@ DATASETS = {
         "ann_repo": "andersonbcdefg/seeclick-filtered-relabeled",
         "ann_split": "train",
         "bbox_type": "relative",
+        "bbox_format": "xyxy",
     },
+    "seeclick-yolo-labeled": {
+        "images_repo": "andersonbcdefg/seeclick-10k-scored",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/seeclick-filtered-yolo-labeled",
+        "ann_split": "train",
+        "bbox_type": "absolute",
+        "bbox_format": "xyxy",
+    },
+    "vibe-coded": {
+        "images_repo": "andersonbcdefg/vibe-coded",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/vibe-coded-labeled",
+        "ann_split": "train",
+        "bbox_type": "relative",
+        "bbox_format": "xyxy",
+    }
 }
 
 def _prepare_image(img_bytes, max_pixels: int = MAX_PIXELS):
@@ -59,22 +104,45 @@ def _prepare_image(img_bytes, max_pixels: int = MAX_PIXELS):
         data_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
         return data_uri, (orig_w, orig_h), (new_w, new_h)
 
+def _convert_bbox_format(
+    bbox: tuple[float, float, float, float],
+    from_format: Literal["xyxy", "xywh"],
+    to_format: Literal["xyxy", "xywh"]
+) -> tuple[float, float, float, float]:
+    """Convert bbox between xyxy and xywh formats."""
+    if from_format == to_format:
+        return bbox
+
+    if from_format == "xywh" and to_format == "xyxy":
+        x, y, w, h = bbox
+        return (x, y, x + w, y + h)
+    elif from_format == "xyxy" and to_format == "xywh":
+        x1, y1, x2, y2 = bbox
+        return (x1, y1, x2 - x1, y2 - y1)
+    else:
+        raise ValueError(f"Unsupported conversion from {from_format} to {to_format}")
+
 def _scale_bbox(
     bbox: tuple[float, float, float, float],
     bbox_type: Literal["absolute", "relative"],
+    bbox_format: Literal["xyxy", "xywh"],
     orig_size: tuple[float, float],
     new_size: tuple[float, float]
-):
+) -> tuple[float, float, float, float]:
     orig_w, orig_h = orig_size
     new_w, new_h = new_size
 
-    x1, y1, x2, y2 = bbox
+    # Convert to xyxy format for processing
+    xyxy_bbox = _convert_bbox_format(bbox, bbox_format, "xyxy")
+    x1, y1, x2, y2 = xyxy_bbox
+
     if bbox_type == "relative":
         scaled_bbox = [x1 * new_w, y1 * new_h, x2 * new_w, y2 * new_h]
     else:
         w_scale, h_scale = new_w / orig_w, new_h / orig_h
         scaled_bbox = [x1 * w_scale, y1 * h_scale, x2 * w_scale, y2 * h_scale]
 
+    # Always return xyxy format
     return tuple(scaled_bbox)
 
 def _bbox_center(
@@ -88,7 +156,8 @@ def _bbox_center(
 def build_split_datasets(
     name: str,
     split: str,
-    bbox_type: Literal["relative", "absolute"]
+    bbox_type: Literal["relative", "absolute"],
+    bbox_format: Literal["xyxy", "xywh"] = "xyxy"
 ):
     """
     Returns:
@@ -117,7 +186,7 @@ def build_split_datasets(
                 elems = elems[0]
 
             for el in elems:
-                scaled = _scale_bbox(el["bbox"], bbox_type, orig_size, new_size)
+                scaled = _scale_bbox(el["bbox"], bbox_type, bbox_format, orig_size, new_size)
                 ann_rows.append({
                     "img_idx": idx,
                     "instruction": el["instruction"],
@@ -133,7 +202,7 @@ def build_split_datasets(
                 elems = elems[0]
 
             for el in elems:
-                scaled = _scale_bbox(el["bbox"], bbox_type, orig_size, new_size)
+                scaled = _scale_bbox(el["bbox"], bbox_type, bbox_format, orig_size, new_size)
                 ann_rows.append({
                     "img_idx": idx,
                     "instruction": el["instruction"],
@@ -142,7 +211,7 @@ def build_split_datasets(
                     "size": new_size
                 })
         else:  # simple one‑annotation‑per‑row case
-            scaled = _scale_bbox(row["bbox"], bbox_type, orig_size, new_size) # type: ignore
+            scaled = _scale_bbox(row["bbox"], bbox_type, bbox_format, orig_size, new_size) # type: ignore
             ann_rows.append({
                 "img_idx": idx,
                 "instruction": row["instruction"], # type: ignore
@@ -161,17 +230,25 @@ def build_split_datasets_two_sources(
     ann_repo: str,
     ann_split: str,
     bbox_type: Literal["relative", "absolute"],
+    bbox_format: Literal["xyxy", "xywh"] = "xyxy",
 ):
     """Join images from one dataset with annotations from another."""
+    def _time():
+        # get time formatted as [HH:MM:SS]
+        return datetime.now().strftime("[%H:%M:%S]")
+    print(f'{_time()} loading image dataset')
     images_raw = (
         load_dataset(image_repo, split=image_split)
         .cast_column("image", Image(decode=False))
     )
+
+    print(f'{_time()} loading annotation dataset')
     ann_raw = load_dataset(ann_repo, split=ann_split, download_mode='force_redownload')
 
     path_map: dict[str, dict] = {}
     img_rows, ann_rows = [], []
 
+    print(f'{_time()} preparing images...')
     for row in images_raw:
         path = row["image"]["path"]  # type: ignore
         data_uri, orig_size, new_size = _prepare_image(row["image"]["bytes"])  # type: ignore
@@ -181,9 +258,15 @@ def build_split_datasets_two_sources(
         path_map[path] = info
         path_map[os.path.basename(path)] = info
 
+    print(f'{_time()} preparing annotations...')
     for row in ann_raw:
         row = cast(dict, row)
-        fname = row.get("file_name") or row.get("filename") or row.get("path")
+        fname = (
+            row.get("file_name") or
+            row.get("img_filename") or
+            row.get("filename") or
+            row.get("path")
+        )
         if not fname:
             continue
         info = path_map.get(fname) or path_map.get(os.path.basename(str(fname)))
@@ -199,7 +282,7 @@ def build_split_datasets_two_sources(
             if elems and isinstance(elems[0], list):
                 elems = elems[0]
             for el in elems:
-                scaled = _scale_bbox(el["bbox"], bbox_type, orig_size, new_size)
+                scaled = _scale_bbox(el["bbox"], bbox_type, bbox_format, orig_size, new_size)
                 ann_rows.append({
                     "img_idx": idx,
                     "instruction": el["instruction"],
@@ -210,7 +293,7 @@ def build_split_datasets_two_sources(
         else:
             if "bbox" not in row or "instruction" not in row:
                 continue
-            scaled = _scale_bbox(row["bbox"], bbox_type, orig_size, new_size)
+            scaled = _scale_bbox(row["bbox"], bbox_type, bbox_format, orig_size, new_size)
             ann_rows.append({
                 "img_idx": idx,
                 "instruction": row["instruction"],
@@ -219,8 +302,11 @@ def build_split_datasets_two_sources(
                 "size": new_size,
             })
 
+    print(f'{_time()} creating datasets...')
     images_ds = Dataset.from_list(img_rows)
     ann_ds = Dataset.from_list(ann_rows)
+
+    print(f'{_time()} done.')
     return images_ds, ann_ds
 
 class UIAnnotationDataset(torch.utils.data.Dataset):
@@ -377,7 +463,7 @@ def load_data(
     for dsn in dataset_names:
         cfg = DATASETS[dsn]
         if "repo_id" in cfg:
-            img_ds, ann_ds = build_split_datasets(cfg["repo_id"], cfg["split"], cfg["bbox_type"])  # type: ignore
+            img_ds, ann_ds = build_split_datasets(cfg["repo_id"], cfg["split"], cfg["bbox_type"], cfg.get("bbox_format", "xyxy"))  # type: ignore
         else:
             img_ds, ann_ds = build_split_datasets_two_sources(
                 cfg["images_repo"],
@@ -385,6 +471,7 @@ def load_data(
                 cfg["ann_repo"],
                 cfg.get("ann_split", "train"),
                 cfg["bbox_type"],
+                cfg.get("bbox_format", "xyxy"),
             )
         ds = UIAnnotationDataset(img_ds, ann_ds)
         loaded.append(ds)

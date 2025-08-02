@@ -101,7 +101,7 @@ def train(
         _, ds = load_data(name, test_size, seed)
         if ds is not None:
             eval_dataloaders[name] = create_dataloader(
-                ds, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
+                ds, eval_processor, batch_size=per_gpu_bs * 4, num_workers=4, eval=True
             )
 
     train_dl = create_dataloader(
@@ -129,7 +129,6 @@ def train(
     lm_weight = model.lm_head.weight  # shared weight matrix (V, H)
 
     # ----------------------- optimiser & sched ---------------------------
-    # opt = AdamW8bit(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd)
     opt = bnb.optim.AdamW8bit(
         model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=wd
     )

@@ -1,8 +1,11 @@
 import io
 from PIL import Image, ImageDraw
+from typing import TypeAlias, Union
 import math
 
-BBox = tuple[float, float, float, float]  # (x, y, w, h) in normalised [0, 1] coords
+# BBox = tuple[float, float, float, float]  # (x, y, w, h) in normalised [0, 1] coords
+# define bbox type
+BBox: TypeAlias = Union[tuple[float, float, float, float], tuple[int, int, int, int]]
 
 def rgba(hex_rgb: str, alpha: int = 80) -> tuple[int, int, int, int]:
     hex_rgb = hex_rgb.lstrip("#")
@@ -91,7 +94,7 @@ def draw_overlay(
 
     W, H = im.size
     x1, y1, x2, y2 = minmax_to_pixels(bbox, W, H)
-    
+
     # Add internal padding to avoid occluding content
     internal_padding = 3
     padded_x1, padded_y1 = x1 - internal_padding, y1 - internal_padding
@@ -130,7 +133,7 @@ def draw_overlay(
     mag = math.hypot(wdx, wdy) or 1.0
     arrow_padding = 10  # pixels away from box edge
     hx, hy = edge_intersection(bx, by, wdx / mag, wdy / mag,
-                                padded_x1 - arrow_padding, padded_y1 - arrow_padding, 
+                                padded_x1 - arrow_padding, padded_y1 - arrow_padding,
                                 padded_x2 + arrow_padding, padded_y2 + arrow_padding)
 
     # --- shaft unit vector (tail -> tip) ---
@@ -165,6 +168,12 @@ def draw_overlay(
     else:
         im.paste(im_rgba)
 
+def _to_relative(bbox: BBox, w: int, h: int):
+    if max(bbox) <= 1.0:
+        return bbox
+    x1, y1, x2, y2 = bbox
+    return (x1 / w, y1 / h, x2 / w, y2 / h)
+
 def annotate_many(
     base_im: Image.Image,
     bboxes: list[BBox],
@@ -189,9 +198,13 @@ def annotate_many(
 
     Returns
     -------
-    List[bytes]
+    list[bytes]
         JPEG‑encoded images, ready to write to disk or feed downstream.
     """
+    # convert bboxes to relative
+    w, h = base_im.size
+    bboxes = [_to_relative(x, w, h) for x in bboxes]
+
     # resize to 1280px
     if resize_to and max(base_im.size) > resize_to:
         base_im = base_im.copy()
@@ -216,3 +229,70 @@ def annotate_many(
         outputs.append(scratch.getvalue())
 
     return outputs
+
+def draw_point(
+    img: Image.Image,
+    xy: tuple[int, int],
+    color: tuple[int, int, int] = (255, 0, 0),
+    radius: int = 1
+) -> Image.Image:
+    """
+    Draw a single point (optionally a small filled circle) on a PIL image.
+
+    Args:
+        img   : A Pillow Image instance (mode “RGB”, “RGBA”, etc.).
+        xy    : tuple (x, y) giving the point’s center.
+        color : RGB/RGBA tuple for the point color.  Default red.
+        radius: Pixel radius.  1 draws a single pixel with ImageDraw.point;
+                >1 draws a filled circle via ImageDraw.ellipse.
+
+    Returns:
+        The same Image instance with the point rendered in-place.
+    """
+    draw = ImageDraw.Draw(img)
+
+    if radius <= 1:
+        draw.point(xy, fill=color)
+    else:
+        x, y = xy
+        draw.ellipse(
+            (x - radius, y - radius, x + radius, y + radius),
+            fill=color,
+            outline=color
+        )
+
+    return img
+
+def draw_bboxes(
+    image: Image.Image,
+    bboxes: list[BBox],
+    *,
+    outline: tuple[int, int, int] | str = (255, 0, 0),
+    width: int = 2
+) -> Image.Image:
+    """
+    Draw axis-aligned bounding boxes on a copy of a PIL image and return it.
+
+    Parameters
+    ----------
+    image
+        Source ``PIL.Image``.
+    bboxes
+        Iterable of ``(x1, y1, x2, y2)`` pixel coordinates.
+    outline
+        Color for the box outline (RGB tuple or any Pillow‐accepted color string).
+    width
+        Line width of the rectangle outline.
+
+    Returns
+    -------
+    PIL.Image
+        A new image with the bounding boxes drawn.
+    """
+    annotated = image.copy()          # keep the original untouched
+    draw = ImageDraw.Draw(annotated)
+
+    for x1, y1, x2, y2 in bboxes:
+        draw.rectangle([x1, y1, x2, y2], outline=outline, width=width)
+
+    return annotated

@@ -27,13 +27,18 @@ image = (
         # Misc support libs
         "libxcb1-dev"
     )
-    .pip_install("torch", "datasets", "pillow-simd", "lm-deluge>=0.0.26", "tqdm")
+    .pip_install("torch", "datasets", "pillow-simd", "lm-deluge>=0.0.32", "tqdm")
     .add_local_python_source("vl_utils")
 )
 
-app = modal.App("relabel-seeclick")
+app = modal.App("label-seeclick-yolo")
 vol = modal.Volume.from_name("seeclick-instructions", create_if_missing=True)
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
+
+prompts = []
+from tqdm.auto import tqdm
+
+
 
 @app.function(
     image=image,
@@ -47,7 +52,7 @@ async def main():
     import datasets
     from PIL import Image
     from lm_deluge import Conversation, Message, LLMClient
-    from vl_utils.draw import draw_overlay, annotate_many
+    from vl_utils.draw import annotate_many
 
     ds = datasets.load_dataset(
         "andersonbcdefg/seeclick-10k-scored-yolo-annots", split="train"
@@ -67,26 +72,37 @@ async def main():
         "just reply [EMPTY] so we know to remove it from the dataset."
     )
 
-    prompts = []
     client = LLMClient(
-        "gpt-4.1-mini",
+        model_names=["gpt-4.1-mini"],
         max_concurrent_requests=100,
         max_tokens_per_minute=10_000_000
     )
 
-    for img_path in glob.glob("/output/*.jpeg"):
-        prompts.append(
-            Conversation([Message.user(prompt).add_image(img_path)])
+    task_ids = []
+    id2row = {}
+    for row_idx, row in enumerate(tqdm(ds)):
+        base_im = Image.open(io.BytesIO(row['image']['bytes'])).convert("RGB")
+        imgs = annotate_many(
+            base_im, [elem['bbox'] for elem in row['yolo_elements']]
         )
-
-    resps = await client.process_prompts_async(prompts)
-    with open("/output/responses.jsonl", "w") as f:
-        for resp in tqdm(resps):
+        for img_bytes in imgs:
+            conv = Conversation([Message.user(prompt).add_image(img_bytes)])
+            task_id = client.start_nowait(conv)
+            await asyncio.sleep(0.01) # let other tasks make progress
+            task_ids.append(task_id)
+            id2row[task_id] = row_idx
+    with open("/output/responses-yolo.jsonl", "w") as f:
+        for task_id in task_ids:
+            resp = await client.wait_for(task_id)
             if resp and resp.completion:
+                print("got response for", task_id)
                 f.write(json.dumps({
+                    "row": id2row[task_id],
                     "completion": resp.completion
                 }) + "\n")
             else:
+                print("no response for", task_id)
                 f.write(json.dumps({
+                    "row": id2row[task_id],
                     "completion": None
                 }) + "\n")

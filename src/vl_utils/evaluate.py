@@ -7,6 +7,8 @@ from transformers import GenerationConfig  # type: ignore
 
 from .spatial import parse_point, point_in_bbox, dist_to_center
 
+torch.backends.cuda.matmul.allow_tf32 = True
+
 
 @torch.no_grad()
 def _evaluate_single(
