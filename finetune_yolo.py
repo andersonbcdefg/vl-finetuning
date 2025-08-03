@@ -121,4 +121,3 @@ def infer(run_name: str, image_path: str):
     out_path = Path("/checkpoints") / run_name / "inference.jpg"
     results[0].save(filename=str(out_path))
     print("Saved annotated image to", out_path)
-

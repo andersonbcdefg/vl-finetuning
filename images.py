@@ -37,6 +37,7 @@ yolo_image = (
         "opencv-python",
         "imagehash",
     )
+    .pip_install("qwen-vl-utils")
     .entrypoint([])
     .add_local_file("model_v1_5.pt", "/yolo_model.pt")
     .add_local_python_source("images")
