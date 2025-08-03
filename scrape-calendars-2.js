@@ -30,8 +30,7 @@ function parts(d) {
 
   // disk setup
   await fs.mkdir("screenshots", { recursive: true });
-  const csv = createWriteStream("results.csv", { encoding: "utf8" });
-  csv.write("isoDate,consoleLogs,screenshotPath\n");
+  const jsonl = createWriteStream("results.jsonl", { encoding: "utf8" });
 
   // browser and persistent tab pool
   const browser = await chromium.launch({
@@ -63,6 +62,9 @@ function parts(d) {
           const url = `https://random-date-coordinates.lovable.app?month=${m}&day=${d}&year=${y}`;
           await page.goto(url, { waitUntil: "load" });
 
+          // sleep for 1 second waiting for console logs
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+
           // unique filename (index + uuid to be absolutely safe)
           const shotPath = `screenshots/${idx.toString().padStart(5, "0")}_${y}-${m}-${d}_${randomUUID()}.jpg`;
           await page.screenshot({
@@ -73,12 +75,12 @@ function parts(d) {
           });
 
           // write CSV row
-          csv.write(
-            [
-              dt.toISOString(),
-              JSON.stringify(logs).replaceAll('"', '""'),
-              shotPath,
-            ].join(",") + "\n",
+          jsonl.write(
+            JSON.stringify({
+              date: dt.toISOString(),
+              logs: logs,
+              screenshot: shotPath,
+            }) + "\n",
           );
 
           page.off("console", handler); // clean up for next round
@@ -97,5 +99,5 @@ function parts(d) {
   // tidy up
   await Promise.all(pages.map((p) => p.close()));
   await browser.close();
-  csv.end();
+  jsonl.end();
 })();
