@@ -27,7 +27,7 @@ def train(
     train_datasets: str,
     epochs: int = 100,
     batch: int = 16,
-    imgsz: int = 640,
+    imgsz: int = 768,
     test_size: int = 500,
 ):
     """Fine‑tune a YOLO detector on the specified datasets.
@@ -44,6 +44,13 @@ def train(
     from vl_utils.data import load_data
 
     train_ds, val_ds = load_data(train_datasets.split(","), test_size, seed=42)
+
+    def _unique_imgs(ds):
+        return len({s["data_uri"] for s in ds})
+
+    n_train = _unique_imgs(train_ds)
+    n_val   = _unique_imgs(val_ds) if val_ds else 0
+    print(f"Dataset prepared!\n→ {n_train} train / {n_val} val images\n→ {len(train_ds)} train boxes, {len(val_ds) if val_ds else 0} val boxes")
 
     root = Path("/tmp/yolo")
     train_img = root / "images" / "train"
@@ -65,12 +72,22 @@ def train(
                 img_bytes = base64.b64decode(b64)
                 with open(img_dir / f"{fname}.jpg", "wb") as f:
                     f.write(img_bytes)
+
             x1, y1, x2, y2 = sample["bbox"]
             w, h = sample["size"]
-            xc = ((x1 + x2) / 2) / w
-            yc = ((y1 + y2) / 2) / h
-            bw = (x2 - x1) / w
-            bh = (y2 - y1) / h
+
+            # If numbers are already ≤1 they’re relative; else convert to relative
+            if max(x2, y2) > 1.0:            # absolute pixel coords
+                x1, x2 = x1 / w, x2 / w
+                y1, y2 = y1 / h, y2 / h
+
+            xc = (x1 + x2) / 2
+            yc = (y1 + y2) / 2
+            bw =  x2 - x1
+            bh =  y2 - y1
+
+            assert 0 <= min(xc, yc, bw, bh) <= max(xc, yc, bw, bh) <= 1, f"bbox out of range: {xc, yc, bw, bh}. orig bbox: {sample['bbox']}"
+
             with open(lbl_dir / f"{fname}.txt", "a") as f:
                 f.write(f"0 {xc} {yc} {bw} {bh}\n")
 
