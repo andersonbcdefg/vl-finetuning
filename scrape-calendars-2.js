@@ -34,7 +34,9 @@ function parts(d) {
   csv.write("isoDate,consoleLogs,screenshotPath\n");
 
   // browser and persistent tab pool
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({
+    headless: false,
+  });
   const context = await browser.newContext();
   const pages = await Promise.all(
     Array.from({ length: CONCURRENCY }, () => context.newPage()),
