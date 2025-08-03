@@ -201,7 +201,7 @@ def train(
                 opt.zero_grad(set_to_none=True)
 
             # ------------- checkpoint ----------------------------------------
-            if steps_so_far % eval_every == 0:
+            if steps_so_far % eval_every == 0 and steps_so_far < total_steps: # dont double-eval
                 save_path = out_dir / f"step-{steps_so_far}"
                 save_path.mkdir(parents=True, exist_ok=True)
                 model.save_pretrained(save_path, safe_serialization=True)

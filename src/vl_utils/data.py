@@ -3,6 +3,7 @@ import io
 import json
 import os
 import random
+import datasets
 from datetime import datetime
 import torch
 from torch.utils.data import ConcatDataset, Subset
@@ -82,10 +83,26 @@ DATASETS = {
         "bbox_type": "absolute",
         "bbox_format": "xyxy",
     },
+    "seeclick-gemini-labeled": {
+        "images_repo": "andersonbcdefg/seeclick-10k-scored",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/seeclick-filtered-gem-labeled",
+        "ann_split": "train",
+        "bbox_type": "relative",
+        "bbox_format": "xyxy",
+    },
     "vibe-coded": {
         "images_repo": "andersonbcdefg/vibe-coded",
         "images_split": "train",
         "ann_repo": "andersonbcdefg/vibe-coded-labeled",
+        "ann_split": "train",
+        "bbox_type": "relative",
+        "bbox_format": "xyxy",
+    },
+    "vibe-coded-filtered": {
+        "images_repo": "andersonbcdefg/vibe-coded",
+        "images_split": "train",
+        "ann_repo": "andersonbcdefg/vibe-coded-gem-labeled-filtered",
         "ann_split": "train",
         "bbox_type": "relative",
         "bbox_format": "xyxy",
@@ -143,7 +160,7 @@ def _scale_bbox(
         scaled_bbox = [x1 * w_scale, y1 * h_scale, x2 * w_scale, y2 * h_scale]
 
     # Always return xyxy format
-    return tuple(scaled_bbox)
+    return tuple(scaled_bbox) # type: ignore
 
 def _bbox_center(
     bbox: tuple[float, float, float, float]
@@ -244,23 +261,13 @@ def build_split_datasets_two_sources(
 
     print(f'{_time()} loading annotation dataset')
     ann_raw = load_dataset(ann_repo, split=ann_split, download_mode='force_redownload')
-
+    images_raw = cast(datasets.Dataset, images_raw)
+    ann_raw = cast(datasets.Dataset, ann_raw)
     path_map: dict[str, dict] = {}
     img_rows, ann_rows = [], []
 
-    print(f'{_time()} preparing images...')
-    for row in images_raw:
-        path = row["image"]["path"]  # type: ignore
-        data_uri, orig_size, new_size = _prepare_image(row["image"]["bytes"])  # type: ignore
-        idx = len(img_rows)
-        img_rows.append({"id": idx, "uri": data_uri})
-        info = {"idx": idx, "orig": orig_size, "new": new_size}
-        path_map[path] = info
-        path_map[os.path.basename(path)] = info
-
-    print(f'{_time()} preparing annotations...')
-    for row in ann_raw:
-        row = cast(dict, row)
+    # normalize filenames, skip images that don't have annotations
+    def _normalize_filename(row):
         fname = (
             row.get("file_name") or
             row.get("img_filename") or
@@ -268,8 +275,52 @@ def build_split_datasets_two_sources(
             row.get("path")
         )
         if not fname:
-            continue
-        info = path_map.get(fname) or path_map.get(os.path.basename(str(fname)))
+            raise ValueError("Image filename not found")
+
+        return { "img_filename": os.path.basename(fname) }
+
+    ann_raw = ann_raw.map(_normalize_filename)
+    present_filenames = set(list(ann_raw["img_filename"]))
+
+    print(f'{_time()} preparing images...')
+    def _prepare_fn(row, idx):
+        path = row["image"]["path"]  # type: ignore
+        data_uri, orig_size, new_size = _prepare_image(row["image"]["bytes"])  # type: ignore
+
+        return {
+            "id": idx,
+            "uri": data_uri,
+            "path": os.path.basename(path),
+            "orig_size": orig_size,
+            "new_size": new_size
+        }
+
+    images_raw = (
+        images_raw.cast_column("image", datasets.Image(decode=False))
+        .filter(lambda row: os.path.basename(row['image']['path']) in present_filenames)
+        .map(
+            _prepare_fn,
+            with_indices=True,
+            remove_columns=['image'],
+            num_proc=4
+        )
+    )
+
+    for row in images_raw:
+        row = cast(dict, row)
+        idx = row["id"]
+        data_uri = row["uri"]
+        path = row['path']
+        orig_size = row["orig_size"]
+        new_size = row["new_size"]
+        img_rows.append({"id": idx, "uri": data_uri})
+        info = {"idx": idx, "orig": orig_size, "new": new_size}
+        path_map[path] = info
+
+    print(f'{_time()} preparing annotations...')
+    for row in ann_raw:
+        row = cast(dict, row)
+        info = path_map.get(row['img_filename'])
         if info is None:
             continue
         orig_size, new_size = info["orig"], info["new"]
@@ -470,8 +521,8 @@ def load_data(
                 cfg.get("images_split", "train"),
                 cfg["ann_repo"],
                 cfg.get("ann_split", "train"),
-                cfg["bbox_type"],
-                cfg.get("bbox_format", "xyxy"),
+                cfg["bbox_type"], # type: ignore
+                cfg.get("bbox_format", "xyxy"), # type: ignore
             )
         ds = UIAnnotationDataset(img_ds, ann_ds)
         loaded.append(ds)

@@ -4,6 +4,7 @@ import os
 import modal
 import numpy as np
 from tqdm.auto import tqdm
+from typing import cast
 
 from images import classifier_image as image
 
@@ -11,7 +12,7 @@ image = image.add_local_python_source("images")
 
 
 class NumpyJSON(json.JSONEncoder):
-    def default(self, obj):
+    def default(self, obj): # type: ignore
         if isinstance(obj, (np.integer, np.floating)):
             return obj.item()  # → int / float
         if isinstance(obj, np.ndarray):
@@ -31,6 +32,7 @@ hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=Tru
 )
 def main():
     import datasets
+    import pandas as pd
 
     OUTPUT_DIR = "/dataset"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -45,6 +47,7 @@ def main():
         .select_columns(["image", "file_name", "score"])
         .cast_column("image", datasets.Image())
     )
+    img_ds = cast(datasets.Dataset, img_ds)
 
     # 2. determine the ones to keep
     scores = img_ds["score"]
@@ -53,19 +56,20 @@ def main():
     print("kept", len(keep_idxs))
 
     annots = datasets.load_dataset(ANNOTATIONS, split="train")
-    ann_df = datasets.load_dataset(
+    ann_df = cast(datasets.Dataset, datasets.load_dataset(
         "andersonbcdefg/seeclick-web-annotations", split="train"
-    ).to_pandas()
+    )).to_pandas()
+    ann_df = cast(pd.DataFrame, ann_df)
 
     # one row per image, “elements” is a list of dicts
-    annot_df = (
+    annot_df = ( # type: ignore
         ann_df.groupby("img_filename")["elements"]
         .agg(list)  # keep duplicates, don’t flatten bbox lists
-        .rename("elements")
+        .rename("elements") # type: ignore
     )
 
     # ── 3. join with kept‑image list ────────────────────────────────────────────────
-    img_df = img_ds_hq.to_pandas()[["file_name", "score"]]
+    img_df = img_ds_hq.to_pandas()[["file_name", "score"]] # type: ignore
     meta_df = img_df.join(annot_df, on="file_name").dropna(subset=["elements"])
 
     # HF csv wants JSON strings for complex columns
@@ -76,9 +80,9 @@ def main():
     # ── 4. copy images we’re keeping ────────────────────────────────────────────────
     keep = set(meta_df.file_name)
     for row in tqdm(img_ds_hq, desc="copy imgs"):
-        fn = row["file_name"]
+        fn = row["file_name"] # type: ignore
         if fn in keep:
-            row["image"].save(os.path.join(OUTPUT_DIR, fn))
+            row["image"].save(os.path.join(OUTPUT_DIR, fn)) # type: ignore
 
     # ── 5. write metadata ───────────────────────────────────────────────────────────
     meta_df.to_csv(os.path.join(OUTPUT_DIR, "metadata.csv"), index=False)
@@ -91,7 +95,7 @@ def main():
     )
 
     # ❺ Push to the Hub (and optionally keep a local copy).
-    ds.push_to_hub(
+    ds.push_to_hub( # type: ignore
         "andersonbcdefg/seeclick-10k-awful-q-annotated",
         max_shard_size="1GB",  # tweak if you hit the 5 GB default limit
     )
