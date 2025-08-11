@@ -1,11 +1,10 @@
-import torch
-from tqdm.auto import tqdm
 from typing import Literal
 
-from qwen_vl_utils import process_vision_info
+import torch
+from tqdm.auto import tqdm
 from transformers import GenerationConfig  # type: ignore
 
-from .spatial import parse_point, point_in_bbox, dist_to_center
+from .spatial import dist_to_center, parse_point, point_in_bbox
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -26,7 +25,7 @@ def _evaluate_single(
 
     for batch in tqdm(dataloader, desc="eval"):
         # ───── move tensors to GPU ─────
-        gt_boxes = batch.pop("bbox")                    # (B, 4)
+        gt_boxes = batch.pop("bbox")  # (B, 4)
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
 
         # ───── generation ─────
@@ -36,10 +35,7 @@ def _evaluate_single(
         )
 
         generation_config.temperature = None  # remove the attribute
-        gen_ids = model.generate(
-            **batch,
-            generation_config=generation_config
-        )
+        gen_ids = model.generate(**batch, generation_config=generation_config)
 
         # ───── trim prefixes & score sample‑wise ─────
         prompt_lens = (batch["input_ids"] != processor.tokenizer.pad_token_id).sum(-1)
@@ -62,6 +58,7 @@ def _evaluate_single(
     acc = hits / total if total else 0.0
     mean_dist = sum(dists) / len(dists) if dists else float("nan")
     return {"accuracy": acc, "mean_center_dist": mean_dist}
+
 
 @torch.no_grad()
 def evaluate(
@@ -101,6 +98,7 @@ def evaluate(
             format=format,
         )
 
+
 # import torch
 # from tqdm.auto import tqdm
 # from typing import Literal
@@ -126,11 +124,11 @@ def evaluate(
 #     for batch in tqdm(dataloader, desc="eval"):
 #         total += 1
 #         gt_box = batch.pop("bbox")[0]
-        # generation_config = GenerationConfig(
-        #     do_sample=False,
-        #     max_new_tokens=max_tokens
-        # )
-        # generation_config.temperature = None          # remove the attribute
+# generation_config = GenerationConfig(
+#     do_sample=False,
+#     max_new_tokens=max_tokens
+# )
+# generation_config.temperature = None          # remove the attribute
 #         out_ids = model.generate(
 #             **batch.to(device),
 #             generation_config=generation_config

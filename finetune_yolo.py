@@ -14,6 +14,14 @@ app = modal.App("finetune-yolo-ui")
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
 ckpt_vol = modal.Volume.from_name("yolo-checkpoints", create_if_missing=True)
 
+def iou(a, b):                     # a, b = (x1, y1, x2, y2) in *relative* coords
+    xa1, ya1, xa2, ya2 = a
+    xb1, yb1, xb2, yb2 = b
+    inter_w  = max(0, min(xa2, xb2) - max(xa1, xb1))
+    inter_h  = max(0, min(ya2, yb2) - max(ya1, yb1))
+    inter    = inter_w * inter_h
+    union    = (xa2-xa1)*(ya2-ya1) + (xb2-xb1)*(yb2-yb1) - inter
+    return inter / union if union else 0.0
 
 @app.function(
     image=image,
@@ -25,7 +33,7 @@ ckpt_vol = modal.Volume.from_name("yolo-checkpoints", create_if_missing=True)
 def train(
     run_name: str,
     train_datasets: str,
-    epochs: int = 100,
+    epochs: int = 10,
     batch: int = 16,
     imgsz: int = 768,
     test_size: int = 500,
@@ -61,6 +69,8 @@ def train(
         p.mkdir(parents=True, exist_ok=True)
 
     def _export(ds, img_dir: Path, lbl_dir: Path):
+        last_uri = None
+        kept = []
         mapping: dict[str, str] = {}
         for sample in ds:
             uri: str = sample["data_uri"]
@@ -73,23 +83,29 @@ def train(
                 with open(img_dir / f"{fname}.jpg", "wb") as f:
                     f.write(img_bytes)
 
-            x1, y1, x2, y2 = sample["bbox"]
-            w, h = sample["size"]
+            if uri != last_uri:
+                last_uri = uri
+                kept = []
 
-            # If numbers are already ≤1 they’re relative; else convert to relative
-            if max(x2, y2) > 1.0:            # absolute pixel coords
+            if not kept or all(iou(sample['bbox'], k) < 0.9 for k in kept):
+                kept.append(sample['bbox'])
+                x1, y1, x2, y2 = sample["bbox"]
+                w, h = sample["size"]
+
                 x1, x2 = x1 / w, x2 / w
                 y1, y2 = y1 / h, y2 / h
+                xc = (x1 + x2) / 2
+                yc = (y1 + y2) / 2
+                bw =  x2 - x1
+                bh =  y2 - y1
 
-            xc = (x1 + x2) / 2
-            yc = (y1 + y2) / 2
-            bw =  x2 - x1
-            bh =  y2 - y1
+                assert 0 <= min(xc, yc, bw, bh) <= max(xc, yc, bw, bh) <= 1, f"bbox out of range: {xc, yc, bw, bh}. orig bbox: {sample['bbox']}"
 
-            assert 0 <= min(xc, yc, bw, bh) <= max(xc, yc, bw, bh) <= 1, f"bbox out of range: {xc, yc, bw, bh}. orig bbox: {sample['bbox']}"
+                with open(lbl_dir / f"{fname}.txt", "a") as f:
+                    f.write(f"0 {xc} {yc} {bw} {bh}\n")
 
-            with open(lbl_dir / f"{fname}.txt", "a") as f:
-                f.write(f"0 {xc} {yc} {bw} {bh}\n")
+            else:
+                print("removing near-duplicate box")
 
     _export(train_ds, train_img, train_lbl)
     if val_ds is not None:
@@ -105,7 +121,7 @@ names:
 """
     )
 
-    model = YOLO("yolo11n.pt")
+    model = YOLO("yolo11m.pt")
     model.train(
         data=str(data_yaml),
         epochs=epochs,

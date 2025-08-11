@@ -1,19 +1,19 @@
 import json
-import time
 import os
+import time
 from pathlib import Path
+
 import modal
 
 # ------------------------------------------------------------------------- #
 #   Modal image: system packages + Python deps                              #
 # ------------------------------------------------------------------------- #
 from images import qwen_image as image
-from vl_utils.data import load_data, create_dataloader
+from vl_utils import freeze_layers
+from vl_utils.data import create_dataloader, load_data
 
 # from vl_utils.data_old import load_data, collate
-from functools import partial
 from vl_utils.evaluate import evaluate
-from vl_utils import freeze_layers
 
 app = modal.App("finetune-qwen25-vl")
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
@@ -21,8 +21,9 @@ metrics_vol = modal.Volume.from_name("vl-ft-metrics", create_if_missing=True)
 
 MINUTES = 60
 
+
 def _print_metrics(results: dict, eval_metrics: list, steps_so_far: int):
-  for name, metrics in results.items():
+    for name, metrics in results.items():
         print(
             f"[{name}] 📊 accuracy: {metrics['accuracy']:.3%} | "
             f"avg centre-distance: {metrics['mean_center_dist']:.4f}"
@@ -36,6 +37,7 @@ def _print_metrics(results: dict, eval_metrics: list, steps_so_far: int):
             }
         )
 
+
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name("HF-SECRET")],
@@ -46,15 +48,16 @@ def _print_metrics(results: dict, eval_metrics: list, steps_so_far: int):
 def train(
     run_name: str,
     train_dataset: str,
-    eval_dataset: str = "webclick,screenspot,groundui-1k"
+    eval_dataset: str = "webclick,screenspot,groundui-1k",
 ):
     import bitsandbytes as bnb
     import torch
     from cut_cross_entropy import linear_cross_entropy  # type: ignore
-    from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl # type: ignore
+    from liger_kernel.transformers import (  # type: ignore
+        apply_liger_kernel_to_qwen2_5_vl,
+    )
     from torch.nn.utils import clip_grad_norm_
     from torch.optim.lr_scheduler import LambdaLR
-    from torch.utils.data import DataLoader
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
     apply_liger_kernel_to_qwen2_5_vl()
@@ -71,7 +74,7 @@ def train(
     device = torch.device("cuda")
     warmup_steps = 100
     total_steps = 2_000
-    train_datasets = train_dataset.split(",") # type: ignore
+    train_datasets = train_dataset.split(",")  # type: ignore
     eval_datasets = eval_dataset.split(",")
     test_size = 125
     eval_every = 400
@@ -93,9 +96,8 @@ def train(
 
     # always include test split of the train data in the loader
     eval_dataloaders["held_out_train"] = create_dataloader(
-      test_split, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
+        test_split, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
     )
-
 
     for name in eval_datasets:
         _, ds = load_data(name, test_size, seed)
@@ -107,7 +109,6 @@ def train(
     train_dl = create_dataloader(
         train, train_processor, batch_size=per_gpu_bs, num_workers=4, eval=False
     )
-
 
     # ---------------------------- model -----------------------------------
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -148,7 +149,6 @@ def train(
     # initial eval
     results = evaluate(model, eval_processor, eval_dataloaders, device)
     _print_metrics(results, eval_metrics, steps_so_far)
-
 
     # --------------------------- training ---------------------------------
     last_step = time.time()
@@ -201,13 +201,14 @@ def train(
                 opt.zero_grad(set_to_none=True)
 
             # ------------- checkpoint ----------------------------------------
-            if steps_so_far % eval_every == 0 and steps_so_far < total_steps: # dont double-eval
+            if (
+                steps_so_far % eval_every == 0 and steps_so_far < total_steps
+            ):  # dont double-eval
                 save_path = out_dir / f"step-{steps_so_far}"
                 save_path.mkdir(parents=True, exist_ok=True)
                 model.save_pretrained(save_path, safe_serialization=True)
                 # processor.save_pretrained(save_path)
                 print(f"✅ saved {save_path}")
-
 
                 # ------------- evaluate ---------------------------------------
                 results = evaluate(model, eval_processor, eval_dataloaders, device)
@@ -216,7 +217,6 @@ def train(
                 last_step = (
                     time.time()
                 )  # shouldn't be abnormally long step time after eval
-
 
             if steps_so_far >= total_steps:
                 break

@@ -1,13 +1,15 @@
 import json
+
 import modal
 
-image = modal.Image.debian_slim(python_version="3.12").pip_install(
-    "lm-deluge>=0.0.31", "huggingface_hub",
-    "datasets", "pillow",
-    "dotenv", "pandas"
-).add_local_file(
-    "/Users/benjamin/Desktop/llm_tokens.env", "/.env"
-).add_local_file("/Users/benjamin/clicks.jsonl", "/clicks.jsonl")
+image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install(
+        "lm-deluge>=0.0.31", "huggingface_hub", "datasets", "pillow", "dotenv", "pandas"
+    )
+    .add_local_file("/Users/benjamin/Desktop/llm_tokens.env", "/.env")
+    .add_local_file("/Users/benjamin/clicks.jsonl", "/clicks.jsonl")
+)
 
 app = modal.App("label-guiworld")
 
@@ -15,20 +17,20 @@ vol = modal.Volume.from_name("guiworld-ds", create_if_missing=True)
 
 MINUTES = 60
 
+
 @app.function(
-    image=image,
-    timeout=MINUTES * 60 * 12,
-    volumes={"/root/.cache/huggingface": vol}
+    image=image, timeout=MINUTES * 60 * 12, volumes={"/root/.cache/huggingface": vol}
 )
 async def main():
-    import tqdm
-    import dotenv
-    import datasets
-    import pandas as pd
     import pickle
-    from lm_deluge import LLMClient, Conversation, Message
-    from PIL import Image
     from io import BytesIO
+
+    import dotenv
+    import pandas as pd
+    import tqdm
+    from lm_deluge import Conversation, LLMClient, Message
+    from PIL import Image
+
     dotenv.load_dotenv("/.env")
 
     # ds = datasets.load_dataset(
@@ -60,7 +62,7 @@ async def main():
             "claude-4-sonnet",
         ],
         model_weights=[0.15, 0.2, 0.65],
-        max_concurrent_requests=8
+        max_concurrent_requests=8,
     )
     resps = []
     rows_to_keep = []
@@ -68,11 +70,11 @@ async def main():
 
     # do 500 prompts at a time
     for row in tqdm.tqdm(df.to_dict(orient="records")):
-        video_id = row['video_id']
-        frame = row['frame']
-        instruction = row['instruction']
+        video_id = row["video_id"]
+        frame = row["frame"]
+        instruction = row["instruction"]
 
-        path = f'{video_id.split(".")[0]}_{frame}.png'.replace("/", "_")
+        path = f"{video_id.split('.')[0]}_{frame}.png".replace("/", "_")
         if path not in path2img:
             print(f"missing {path}! skipping")
             continue
@@ -81,10 +83,14 @@ async def main():
         pil_img = Image.open(BytesIO(img))
         w, h = pil_img.size
 
-        prompt = Conversation([Message.user(
-            "Identify where to click in the image to complete the instruction: "
-            + f'"{instruction}". The screen is {w}x{h}. JUST return coordinates, no yapping.'
-        ).add_image(img, media_type="image/jpeg")])
+        prompt = Conversation(
+            [
+                Message.user(
+                    "Identify where to click in the image to complete the instruction: "
+                    + f'"{instruction}". The screen is {w}x{h}. JUST return coordinates, no yapping.'
+                ).add_image(img, media_type="image/jpeg")
+            ]
+        )
 
         prompts.append(prompt)
 
@@ -100,8 +106,8 @@ async def main():
 
     # at the end, save everything
     completions = [r.completion for r in resps]
-    json.dump(completions, open('/root/.cache/huggingface/completions.json', 'w'))
+    json.dump(completions, open("/root/.cache/huggingface/completions.json", "w"))
     df_to_save = pd.DataFrame.from_records(rows_to_keep)
-    df_to_save['completion'] = completions
+    df_to_save["completion"] = completions
 
-    df_to_save.to_csv('/root/.cache/huggingface/labelled_data.csv', index=False)
+    df_to_save.to_csv("/root/.cache/huggingface/labelled_data.csv", index=False)
