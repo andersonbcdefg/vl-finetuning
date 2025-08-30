@@ -22,7 +22,7 @@ function parts(d) {
 (async () => {
   const START = new Date(Date.UTC(2000, 0, 1));
   const END = new Date(Date.UTC(2030, 11, 31, 23));
-  const TOTAL = 10_000;
+  const TOTAL = 100_000;
   const CONCURRENCY = 10;
 
   // generate dates

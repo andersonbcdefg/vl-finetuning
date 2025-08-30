@@ -15,184 +15,10 @@ from qwen_vl_utils import process_vision_info, smart_resize
 from torch.utils.data import ConcatDataset, Subset
 
 from .common import MAX_PIXELS
+from .datasets import DATASETS
 from .spatial import bbox_center, flat_polygon_to_bbox, format_point, scale_bbox
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-# Dataset configurations
-DATASETS = {
-    "webclick": {
-        "repo_id": "Hcompany/WebClick",
-        "split": "test",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "groundui-1k": {
-        "repo_id": "agent-studio/GroundUI-1K",
-        "split": "train",
-        "bbox_type": "absolute",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-5": {
-        "repo_id": "andersonbcdefg/seeclick-10k-hq-annotated",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-3-4": {
-        "repo_id": "andersonbcdefg/seeclick-10k-mid-q-annotated",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-1-2": {
-        "repo_id": "andersonbcdefg/seeclick-10k-low-q-annotated",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-0": {
-        "repo_id": "andersonbcdefg/seeclick-10k-awful-q-annotated",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-0-annots": {
-        "repo_id": "andersonbcdefg/seeclick-0-1-yolo-annots",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-1-annots": {
-        "repo_id": "andersonbcdefg/seeclick-2-3-yolo-annots",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-2-annots": {
-        "repo_id": "andersonbcdefg/seeclick-4-7-yolo-annots",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-3-annots": {
-        "repo_id": "andersonbcdefg/seeclick-8-12-yolo-annots",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-4-annots": {
-        "repo_id": "andersonbcdefg/seeclick-13-plus-yolo-annots",
-        "split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "screenspot": {
-        "repo_id": "rootsautomation/ScreenSpot",
-        "split": "test",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "screenspot-v2-web": {
-        "images_repo": "andersonbcdefg/screenspot-v2-images",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/screenspot-v2-annots-web",
-        "ann_split": "train",
-        "bbox_type": "absolute",
-        "bbox_format": "xywh",
-    },
-    "screenspot-v2-mobile": {
-        "images_repo": "andersonbcdefg/screenspot-v2-images",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/screenspot-v2-annots-mobile",
-        "ann_split": "train",
-        "bbox_type": "absolute",
-        "bbox_format": "xywh",
-    },
-    "screenspot-v2-desktop": {
-        "images_repo": "andersonbcdefg/screenspot-v2-images",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/screenspot-v2-annots-desktop",
-        "ann_split": "train",
-        "bbox_type": "absolute",
-        "bbox_format": "xywh",
-    },
-    # uses original instruction from osworld
-    "osworld-g-orig": {
-        "images_repo": "andersonbcdefg/osworld-g-images",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/osworld-g-orig-annots",
-        "ann_split": "train",
-        "bbox_type": "absolute",
-        "bbox_format": "xyxy",
-    },
-    # uses "refined" instruction meant to not require add'l context
-    "osworld-g-refined": {
-        "images_repo": "andersonbcdefg/osworld-g-images",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/osworld-g-refined-annots",
-        "ann_split": "train",
-        "bbox_type": "absolute",
-        "bbox_format": "xyxy",
-    },
-    # TRAINING VARIATIONS
-    "seeclick-filtered": {
-        "images_repo": "andersonbcdefg/seeclick-10k-scored",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/seeclick-filtered-orig-labels",
-        "ann_split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-relabeled": {
-        "images_repo": "andersonbcdefg/seeclick-10k-scored",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/seeclick-filtered-relabeled",
-        "ann_split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-yolo-labeled": {
-        "images_repo": "andersonbcdefg/seeclick-10k-scored",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/seeclick-filtered-yolo-labeled",
-        "ann_split": "train",
-        "bbox_type": "absolute",
-        "bbox_format": "xyxy",
-    },
-    "seeclick-gemini-labeled": {
-        "images_repo": "andersonbcdefg/seeclick-10k-scored",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/seeclick-filtered-gem-labeled",
-        "ann_split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "vibe-coded": {
-        "images_repo": "andersonbcdefg/vibe-coded",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/vibe-coded-labeled",
-        "ann_split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "vibe-coded-filtered": {
-        "images_repo": "andersonbcdefg/vibe-coded",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/vibe-coded-gem-labeled-filtered",
-        "ann_split": "train",
-        "bbox_type": "relative",
-        "bbox_format": "xyxy",
-    },
-    "calendars": {
-        "images_repo": "andersonbcdefg/synth-calendars",
-        "images_split": "train",
-        "ann_repo": "andersonbcdefg/synth-calendar-annots",
-        "ann_split": "train",
-        "bbox_type": "absolute",
-        "bbox_format": "xyxy",
-    },
-}
 
 
 def _prepare_image(img_bytes, max_pixels: int = MAX_PIXELS):
@@ -500,7 +326,7 @@ def collate_fn(
         elif message_format == "xml":
             fmt_prompt = (
                 "Report the click location in XML like "
-                '<points x1="x" y1="y">object</points>.'
+                '<points x1="x" y1="y">click</points>.'
             )
         else:  # plain
             fmt_prompt = "Return your click as (x, y) pixel coordinates."
@@ -578,17 +404,64 @@ def add_labels_to_inputs(
     return inputs
 
 
+def create_weighted_subsets(
+    datasets: list[tuple[str, torch.utils.data.Dataset]],
+    weights: dict[str, float],
+    total_samples: int,
+    seed: int = 42,
+) -> list[torch.utils.data.Dataset]:
+    """Create weighted subsets of datasets based on relative weights."""
+    random.seed(seed)
+
+    # Calculate target sizes for each dataset
+    total_weight = sum(weights.get(name, 1.0) for name, _ in datasets)
+    weighted_datasets = []
+
+    for name, dataset in datasets:
+        weight = weights.get(name, 1.0)
+        target_size = int((weight / total_weight) * total_samples)
+        current_size = len(dataset)
+
+        if target_size == 0:
+            # Skip datasets with zero weight
+            continue
+        elif target_size <= current_size:
+            # Downsample: randomly select subset
+            indices = random.sample(range(current_size), target_size)
+        else:
+            # Upsample: sample with replacement
+            indices = random.choices(range(current_size), k=target_size)
+
+        weighted_datasets.append(Subset(dataset, indices))
+        print(
+            f"Dataset '{name}': {current_size} -> {target_size} samples (weight: {weight})"
+        )
+
+    return weighted_datasets
+
+
 def load_data(
     datasets: str | list[str] = "webclick",
     test_size: int = 100,
     seed: int = 42,
-    subsample: int | None = None,
+    weights: dict[str, float] | None = None,
+    total_samples: int | None = None,
 ):
     """
     Load datasets using the new efficient approach.
 
-    Returns train and test UIAnnotationDataset instances.
-    Backwards compatible with the old load_data interface.
+    Args:
+        datasets: Dataset name(s) to load
+        test_size: Number of samples to reserve for testing
+        seed: Random seed for reproducibility
+        weights: Optional dict mapping dataset names to relative weights.
+                If provided, datasets will be resampled to match these weights.
+        total_samples: Target total number of samples when using weights.
+                      If None, uses sum of original dataset sizes.
+
+    Returns:
+        train and test UIAnnotationDataset instances.
+        Backwards compatible with the old load_data interface.
     """
     if isinstance(datasets, str):
         dataset_names = [datasets]
@@ -620,22 +493,41 @@ def load_data(
                 cfg.get("bbox_format", "xyxy"),  # type: ignore
             )
         ds = UIAnnotationDataset(img_ds, ann_ds)
-        loaded.append(ds)
+        print("loaded", len(ds), "samples from", dsn)
+        loaded.append((dsn, ds))
 
-    full_dataset = loaded[0] if len(loaded) == 1 else ConcatDataset(loaded)
+    # Apply weighting if specified
+    if weights is not None:
+        if total_samples is None:
+            total_samples = sum(len(ds) for _, ds in loaded)
+        weighted_datasets = create_weighted_subsets(
+            loaded, weights, total_samples, seed
+        )
+        full_dataset = (
+            weighted_datasets[0]
+            if len(weighted_datasets) == 1
+            else ConcatDataset(weighted_datasets)
+        )
+    else:
+        # Original behavior: concatenate datasets as-is
+        dataset_list = [ds for _, ds in loaded]
+        full_dataset = (
+            dataset_list[0] if len(dataset_list) == 1 else ConcatDataset(dataset_list)
+        )
 
     if test_size == 0:
         return full_dataset, None
 
     # Split into train/test
     random.seed(seed)
+    # assert isinstance(full_dataset, Dataset)
     test_ids = set(
         random.sample(range(len(full_dataset)), min(test_size, len(full_dataset)))
     )
     train_ids = [i for i in range(len(full_dataset)) if i not in test_ids]
 
-    train_dataset = Subset(full_dataset, train_ids)
-    test_dataset = Subset(full_dataset, list(test_ids))
+    train_dataset = Subset(full_dataset, train_ids)  # type: ignore
+    test_dataset = Subset(full_dataset, list(test_ids))  # type: ignore
 
     return train_dataset, test_dataset
 

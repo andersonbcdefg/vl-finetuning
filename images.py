@@ -1,18 +1,15 @@
 import modal
 
-python_version = "3.11"
-flash_attn_version = "2.7.4"
-pytorch_version = "2.7.1"
 cuda_version = "12.8.1"  # should be no greater than host CUDA version
 flavor = "devel"  #  includes full CUDA toolkit
 operating_sys = "ubuntu22.04"
 tag = f"{cuda_version}-{flavor}-{operating_sys}"
-FLASH_ATTN_URL = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.3.10/flash_attn-2.7.4+cu128torch2.7-cp311-cp311-linux_x86_64.whl"
+FLASH_ATTN_URL = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.3.14/flash_attn-2.8.2+cu128torch2.8-cp312-cp312-linux_x86_64.whl"
 
 base_image = (
-    modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.11")
+    modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.12")
     .apt_install("git")
-    .pip_install("torch==2.7.1")
+    .pip_install("torch==2.8.0")
 )
 
 yolo_image = (
@@ -72,11 +69,8 @@ classifier_image = (
 )
 
 qwen_image = (
-    base_image.run_commands(  # add flash-attn
-        f"pip install {FLASH_ATTN_URL}"
-    )
-    .pip_install(
-        "transformers",
+    base_image.uv_pip_install(
+        "transformers<4.54.0",
         "datasets",
         "torchvision",
         "qwen-vl-utils",
@@ -91,16 +85,15 @@ qwen_image = (
         "pillow",
         "hf_xet",
         "torchao",
+        "bitsandbytes",
+        "liger-kernel",
     )
     .pip_install(
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
     )
-    .pip_install("bitsandbytes", "liger-kernel")
-    # .pip_install_private_repos(
-    #     "github.com/andersonbcdefg/vl-finetuning.git@f5c39fb",
-    #     git_user="andersonbcdefg",
-    #     secrets=[modal.Secret.from_name("my-github-secret")],
-    # )
+    .run_commands(  # add flash-attn
+        f"pip install {FLASH_ATTN_URL}"
+    )
     .entrypoint([])
     .add_local_python_source("images")
     .add_local_python_source("vl_utils")

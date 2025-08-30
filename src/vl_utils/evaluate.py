@@ -46,6 +46,7 @@ def _evaluate_single(
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=False,
             )
+            # print("predicted text:", pred_txt)
             point = parse_point(pred_txt, format=format)
 
             if point:

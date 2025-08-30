@@ -1,0 +1,1 @@
+modal run -d finetune_qwen.py --run-name baseline-figma-os --train-dataset vibe-coded-filtered,seeclick-gemini-labeled,figma,os --weights 1.0,1.0,1.0,1.0 --eval-dataset showdown,webclick,osworld-g-orig,screenspot

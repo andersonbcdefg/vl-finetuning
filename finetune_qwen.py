@@ -41,14 +41,15 @@ def _print_metrics(results: dict, eval_metrics: list, steps_so_far: int):
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name("HF-SECRET")],
-    gpu="H100",
+    gpu="H200",
     volumes={"/root/.cache/huggingface": hf_cache_vol, "/metrics": metrics_vol},
     timeout=240 * MINUTES,
 )
 def train(
     run_name: str,
     train_dataset: str,
-    eval_dataset: str = "webclick,screenspot,groundui-1k",
+    eval_dataset: str = "webclick,screenspot,showdown",
+    weights: str | None = None,
 ):
     import bitsandbytes as bnb
     import torch
@@ -65,8 +66,8 @@ def train(
     # --------------------------- config -----------------------------------
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     out_dir = Path("/root/checkpoints/qwen").expanduser()
-    per_gpu_bs = 4
-    grad_accum = 4
+    per_gpu_bs = 8
+    grad_accum = 2
     lr = 2e-5
     wd = 0.01
     max_grad_norm = 1.0
@@ -76,10 +77,25 @@ def train(
     total_steps = 2_000
     train_datasets = train_dataset.split(",")  # type: ignore
     eval_datasets = eval_dataset.split(",")
+
+    # Parse weights if provided
+    weights_dict = None
+    if weights is not None:
+        weight_values = [float(w.strip()) for w in weights.split(",")]
+        if len(weight_values) != len(train_datasets):
+            raise ValueError(
+                f"Number of weights ({len(weight_values)}) must match number of datasets ({len(train_datasets)})"
+            )
+        weights_dict = {
+            name: weight for name, weight in zip(train_datasets, weight_values)
+        }
+        print(f"Using weights: {weights_dict}")
+
     test_size = 125
-    eval_every = 400
+    eval_every = 200
     test_size = 250
     seed = 42
+    total_samples = per_gpu_bs * total_steps
 
     # ---------------------------- data ------------------------------------
     train_processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
@@ -92,11 +108,17 @@ def train(
 
     # Load training dataset and evaluation datasets separately
     eval_dataloaders = {}
-    train, test_split = load_data(train_datasets, test_size, seed)
+    train, test_split = load_data(
+        train_datasets,
+        test_size,
+        seed,
+        weights=weights_dict,
+        total_samples=total_samples + test_size,
+    )
 
     # always include test split of the train data in the loader
     eval_dataloaders["held_out_train"] = create_dataloader(
-        test_split, eval_processor, batch_size=per_gpu_bs * 2, num_workers=4, eval=True
+        test_split, eval_processor, batch_size=per_gpu_bs * 4, num_workers=4, eval=True
     )
 
     for name in eval_datasets:
